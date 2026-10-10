@@ -40,6 +40,23 @@ public class TextEditor {
         return "Redone.";
     }
 
+    public void insertAt(int index, String newText) {
+        undoStack.push(currentText.toString());
+        index = Math.max(0, Math.min(index, currentText.length()));
+        currentText.insert(index, newText);
+        redoStack.clear();
+    }
+
+    public void deleteAt(int index) {
+        if (currentText.length() == 0 || index <= 0) {
+            return;
+        }
+        undoStack.push(currentText.toString());
+        index = Math.min(index, currentText.length());
+        currentText.deleteCharAt(index - 1);
+        redoStack.clear();
+    }
+
     public String find(String word) {
         int index = currentText.indexOf(word);
         if (index != -1) {

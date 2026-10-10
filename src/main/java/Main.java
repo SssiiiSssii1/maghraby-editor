@@ -13,9 +13,12 @@ import java.io.IOException;
 
 public class Main {
     private static TextEditor editor = new TextEditor();
+    private static Screen screen;
     private static String statusMessage = "NORMAL MODE | Press 'i' to Insert, ':' for Command, 'u' for Undo, Ctrl+R for Redo, 'q' to Quit";
     private static Mode currentMode = Mode.NORMAL;
     private static StringBuilder commandInput = new StringBuilder();
+    private static int cursorCol = 1;
+    private static int cursorRow = 2;
 
     enum Mode {
         NORMAL,
@@ -25,13 +28,12 @@ public class Main {
 
     public static void main(String[] args) {
         DefaultTerminalFactory factory = new DefaultTerminalFactory();
-        Screen screen = null;
 
         try {
             Terminal terminal = factory.createTerminal();
             screen = new TerminalScreen(terminal);
             screen.startScreen();
-            screen.setCursorPosition(null); // إخفاء أو ضبط الكرسور حسب الحاجة
+            screen.setCursorPosition(null);
 
             while (true) {
                 render(screen);
@@ -59,7 +61,6 @@ public class Main {
         }
     }
 
-    // رسم واجهة المحرر بالكامل
     private static void render(Screen screen) throws IOException {
         screen.clear();
         TerminalSize size = screen.getTerminalSize();
@@ -68,18 +69,17 @@ public class Main {
 
         TextGraphics tg = screen.newTextGraphics();
 
-        // 1. شريط العنوان العلوي
+        screen.setCursorPosition(new TerminalPosition(cursorCol, cursorRow));
+
         tg.setBackgroundColor(TextColor.ANSI.BLUE);
         tg.setForegroundColor(TextColor.ANSI.WHITE);
         String header = " Console Text Editor -- Mode: " + currentMode;
         tg.putString(0, 0, padRight(header, cols));
 
-        // 2. عرض محتوى النص (Buffer)
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
         String text = editor.getCurrentText();
 
-        // تقسيم النص لأسطر وعرضه داخل الشاشة
         int currentRow = 2;
         String[] lines = text.split("\n");
         for (String line : lines) {
@@ -87,34 +87,27 @@ public class Main {
             tg.putString(1, currentRow++, line);
         }
 
-        // 3. شريط الحالة السفلي (Status Bar)
         tg.setBackgroundColor(TextColor.ANSI.WHITE);
         tg.setForegroundColor(TextColor.ANSI.BLACK);
         tg.putString(0, rows - 2, padRight(" " + statusMessage, cols));
 
-        // 4. سطر الأوامر أو الإدخال (السطر الأخير)
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
         if (currentMode == Mode.COMMAND) {
             tg.putString(0, rows - 1, ":" + commandInput.toString());
             screen.setCursorPosition(new TerminalPosition(1 + commandInput.length(), rows - 1));
-        } else if (currentMode == Mode.INSERT) {
-            // مؤشر الكتابة في نهاية النص
-            int curCol = (lines.length > 0 ? lines[lines.length - 1].length() + 1 : 1);
-            screen.setCursorPosition(new TerminalPosition(curCol, Math.max(2, currentRow - 1)));
         } else {
-            screen.setCursorPosition(new TerminalPosition(0, rows - 1));
+            screen.setCursorPosition(new TerminalPosition(cursorCol, cursorRow));
         }
 
         screen.refresh();
     }
 
-    // معالجة الضغطات في وضع NORMAL
     private static boolean handleNormalMode(KeyStroke key) {
         if (key.getKeyType() == KeyType.Character) {
             char c = key.getCharacter();
             if (c == 'q') {
-                return true; // خروج
+                return true;
             } else if (c == 'i') {
                 currentMode = Mode.INSERT;
                 statusMessage = "-- INSERT MODE -- (Press ESC to return to Normal Mode)";
@@ -128,10 +121,16 @@ public class Main {
         } else if (key.getKeyType() == KeyType.ReverseTab || (key.isCtrlDown() && key.getCharacter() == 'r')) {
             statusMessage = editor.redo();
         }
+
+        if (key.getKeyType() == KeyType.ArrowLeft || key.getKeyType() == KeyType.ArrowRight ||
+                key.getKeyType() == KeyType.ArrowUp   || key.getKeyType() == KeyType.ArrowDown) {
+            handleArrowKeys(key);
+            return false;
+        }
+
         return false;
     }
 
-    // معالجة الكتابة المباشرة في وضع INSERT
     private static void handleInsertMode(KeyStroke key) {
         if (key.getKeyType() == KeyType.Escape) {
             currentMode = Mode.NORMAL;
@@ -139,16 +138,100 @@ public class Main {
             return;
         }
 
+        if (key.getKeyType() == KeyType.ArrowLeft || key.getKeyType() == KeyType.ArrowRight ||
+                key.getKeyType() == KeyType.ArrowUp   || key.getKeyType() == KeyType.ArrowDown) {
+            handleArrowKeys(key);
+            return;
+        }
+
+        TerminalSize size = screen.getTerminalSize();
+        int maxCols = size.getColumns() - 2;
+        int maxRows = size.getRows() - 3;
+
         if (key.getKeyType() == KeyType.Character) {
-            editor.write(String.valueOf(key.getCharacter()));
+            int idx = getCursorBufferIndex();
+            editor.insertAt(idx, String.valueOf(key.getCharacter()));
+
+            if (cursorCol >= maxCols) {
+                if (cursorRow < maxRows) {
+                    cursorRow++;
+                    cursorCol = 1;
+                }
+            } else {
+                cursorCol++;
+            }
         } else if (key.getKeyType() == KeyType.Backspace) {
-            editor.delete(1);
+            int idx = getCursorBufferIndex();
+            if (idx > 0) {
+                editor.deleteAt(idx);
+                if (cursorCol <= 1) {
+                    if (cursorRow > 2) {
+                        cursorRow--;
+                        cursorCol = maxCols;
+                    }
+                } else {
+                    cursorCol--;
+                }
+            }
         } else if (key.getKeyType() == KeyType.Enter) {
-            editor.write("\n");
+            int idx = getCursorBufferIndex();
+            editor.insertAt(idx, "\n");
+            cursorRow++;
+            cursorCol = 1;
         }
     }
 
-    // معالجة كتابة الأوامر في وضع COMMAND
+    private static void handleArrowKeys(KeyStroke key) {
+        TerminalSize size = screen.getTerminalSize();
+        int maxCols = size.getColumns() - 2;
+        int maxRows = size.getRows() - 3;
+
+        if (key.getKeyType() == KeyType.ArrowRight) {
+            if (cursorCol >= maxCols) {
+                if (cursorRow < maxRows) {
+                    cursorRow++;
+                    cursorCol = 1;
+                }
+            } else {
+                cursorCol++;
+            }
+        } else if (key.getKeyType() == KeyType.ArrowLeft) {
+            if (cursorCol <= 1) {
+                if (cursorRow > 2) {
+                    cursorRow--;
+                    cursorCol = maxCols;
+                }
+            } else {
+                cursorCol--;
+            }
+        } else if (key.getKeyType() == KeyType.ArrowUp) {
+            if (cursorRow > 2) cursorRow--;
+        } else if (key.getKeyType() == KeyType.ArrowDown) {
+            if (cursorRow < maxRows) cursorRow++;
+        }
+    }
+
+    private static int getCursorBufferIndex() {
+        String text = editor.getCurrentText();
+        String[] lines = text.split("\n", -1);
+
+        int targetLineIdx = cursorRow - 2;
+        int index = 0;
+
+        for (int i = 0; i < lines.length && i < targetLineIdx; i++) {
+            index += lines[i].length() + 1;
+        }
+
+        if (targetLineIdx < lines.length) {
+            int colOffset = Math.max(0, cursorCol - 1);
+            index += Math.min(colOffset, lines[targetLineIdx].length());
+        } else {
+            index = text.length();
+        }
+
+        return Math.min(index, text.length());
+    }
+
     private static void handleCommandMode(KeyStroke key) {
         if (key.getKeyType() == KeyType.Escape) {
             currentMode = Mode.NORMAL;
@@ -171,7 +254,22 @@ public class Main {
         }
     }
 
-    // تنفيذ الأمر المكتوب
+    private static void handleArrowKeys(KeyStroke key, Screen screen) {
+        TerminalSize size = screen.getTerminalSize();
+        int maxRows = size.getRows() - 3;
+        int maxCols = size.getColumns() - 2;
+
+        if (key.getKeyType() == KeyType.ArrowLeft) {
+            if (cursorCol > 1) cursorCol--;
+        } else if (key.getKeyType() == KeyType.ArrowRight) {
+            if (cursorCol < maxCols) cursorCol++;
+        } else if (key.getKeyType() == KeyType.ArrowUp) {
+            if (cursorRow > 2) cursorRow--;
+        } else if (key.getKeyType() == KeyType.ArrowDown) {
+            if (cursorRow < maxRows) cursorRow++;
+        }
+    }
+
     private static void executeCommand(String input) {
         if (input.isEmpty()) return;
 
