@@ -3,6 +3,14 @@
  * Manages the current text buffer, modifications (insert, delete, replace, find),
  * and state history for Undo/Redo operations using custom stacks.
  */
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+
 public class TextEditor {
     private StringBuilder currentText;
     private MyStack undoStack;
@@ -32,11 +40,10 @@ public class TextEditor {
      * Deletes the character preceding the cursor index (Backspace behavior).
      */
     public void deleteAt(int index) {
-        if (currentText.length() == 0 || index <= 0) return;
+        if (currentText.length() == 0 || index < 0 || index >= currentText.length()) return;
 
         undoStack.push(currentText.toString());
-        index = Math.min(index, currentText.length());
-        currentText.deleteCharAt(index - 1);
+        currentText.deleteCharAt(index);
         redoStack.clear();
     }
 
@@ -120,5 +127,60 @@ public class TextEditor {
             return "Deleted '" + word + "'.";
         }
         return "The word does NOT exist!";
+    }
+
+    /**
+     * Saves the current buffer text into a file.
+     * @param filename Target file path/name.
+     * @return Status message for the UI.
+     */
+    public String saveToFile(String filename) {
+        if (filename == null || filename.trim().isEmpty()) {
+            return "Error: Filename cannot be empty!";
+        }
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename.trim()))) {
+            writer.write(currentText.toString());
+            return "Saved to '" + filename + "' successfully.";
+        } catch (IOException e) {
+            return "Error saving file: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Loads text from a file into the editor buffer and preserves undo history.
+     * @param filename Source file path/name.
+     * @return Status message for the UI.
+     */
+    public String loadFromFile(String filename) {
+        if (filename == null || filename.trim().isEmpty()) {
+            return "Error: Filename cannot be empty!";
+        }
+
+        File file = new File(filename.trim());
+        if (!file.exists()) {
+            return "File '" + filename + "' not found. New file will be created on save.";
+        }
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            boolean firstLine = true;
+
+            while ((line = reader.readLine()) != null) {
+                if (!firstLine) {
+                    sb.append("\n");
+                }
+                sb.append(line);
+                firstLine = false;
+            }
+
+            undoStack.push(currentText.toString());
+            currentText = sb;
+            redoStack.clear();
+            return "Loaded '" + filename + "' successfully.";
+        } catch (IOException e) {
+            return "Error loading file: " + e.getMessage();
+        }
     }
 }

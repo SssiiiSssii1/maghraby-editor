@@ -14,6 +14,7 @@ import java.io.IOException;
 public class Main {
     private static final TextEditor editor = new TextEditor();
 
+    private static String currentFilename = null;
     private static Screen screen;
     private static String statusMessage =
             "NORMAL MODE | i: Insert | :: Command | u: Undo | Ctrl+R: Redo | q: Quit";
@@ -38,6 +39,11 @@ public class Main {
             screen = new TerminalScreen(terminal);
             screen.startScreen();
             screen.setCursorPosition(null);
+
+            if (args.length > 0 && !args[0].trim().isEmpty()) {
+                currentFilename = args[0].trim();
+                statusMessage = editor.loadFromFile(currentFilename);
+            }
 
             while (running) {
                 render(screen);
@@ -350,13 +356,24 @@ public class Main {
 
         if (cmd.equals("q") || cmd.equals("exit")) {
             running = false;
-        } else if (cmd.equals("w") || cmd.equals("write")) {
+        } else if (cmd.equals("w") || cmd.equals("write") || cmd.equals("save")) {
+            // 1. حفظ الملف (يدعم :w filename.txt أو :w السريع)
             if (!args.isEmpty()) {
-                editor.write(args);
-                cursorIndex = getText().length();
-                statusMessage = "Added: " + args;
+                currentFilename = args;
+                statusMessage = editor.saveToFile(currentFilename);
+            } else if (currentFilename != null && !currentFilename.isEmpty()) {
+                statusMessage = editor.saveToFile(currentFilename);
             } else {
-                statusMessage = "Usage: w <text>";
+                statusMessage = "Usage: :w <filename.txt>";
+            }
+        } else if (cmd.equals("load") || cmd.equals("e") || cmd.equals("open")) {
+            // 2. فتح ملف موجود
+            if (!args.isEmpty()) {
+                currentFilename = args;
+                statusMessage = editor.loadFromFile(currentFilename);
+                cursorIndex = 0; // إعادة المؤشر للبداية بعد التحميل
+            } else {
+                statusMessage = "Usage: :e <filename.txt> or :load <filename.txt>";
             }
         } else if (cmd.equals("d") || cmd.equals("delete")) {
             if (args.isEmpty()) {
