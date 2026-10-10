@@ -12,14 +12,23 @@ import com.googlecode.lanterna.terminal.Terminal;
 import java.io.IOException;
 
 public class Main {
+    // Top variables
     private static TextEditor editor = new TextEditor();
     private static Screen screen;
     private static String statusMessage = "NORMAL MODE | Press 'i' to Insert, ':' for Command, 'u' for Undo, Ctrl+R for Redo, 'q' to Quit";
     private static Mode currentMode = Mode.NORMAL;
     private static StringBuilder commandInput = new StringBuilder();
+
+    // Cursor screen coordinates (Row starts at 2 to leave space for title header)
     private static int cursorCol = 1;
     private static int cursorRow = 2;
 
+    /**
+     * Editor operational modes modeled after Vim:
+     * - NORMAL: Navigation, short commands, undo/redo.
+     * - INSERT: Direct typing and character-by-character editing.
+     * - COMMAND: Command-line execution (:w, :d, :f, :r).
+     */
     enum Mode {
         NORMAL,
         INSERT,
@@ -211,6 +220,9 @@ public class Main {
         }
     }
 
+    /**
+     * Translates visual cursor coordinates (row, col) into the 1D buffer index.
+     */
     private static int getCursorBufferIndex() {
         String text = editor.getCurrentText();
         String[] lines = text.split("\n", -1);
@@ -219,7 +231,7 @@ public class Main {
         int index = 0;
 
         for (int i = 0; i < lines.length && i < targetLineIdx; i++) {
-            index += lines[i].length() + 1;
+            index += lines[i].length() + 1; // +1 to account for newline delimiter
         }
 
         if (targetLineIdx < lines.length) {
