@@ -345,6 +345,69 @@ public class Main {
         }
     }
 
+    /**
+     * Saves the buffer and executes the appropriate compiler/interpreter
+     * based on file extension, temporarily suspending the Lanterna TUI.
+     */
+    private static void compileAndRun() {
+        if (currentFilename == null || currentFilename.isEmpty()) {
+            statusMessage = "Error: Save the file first with :w <filename>";
+            return;
+        }
+
+        // 1. Save the latest buffer changes to disk before compilation
+        editor.saveToFile(currentFilename);
+
+        try {
+            // 2. Temporarily stop Lanterna screen to hand over control to the real terminal
+            screen.stopScreen();
+
+            System.out.println("========================================");
+            System.out.println(" Compiling & Running: " + currentFilename);
+            System.out.println("========================================\n");
+
+            // 3. Select compiler/interpreter command based on file extension
+            ProcessBuilder pb;
+            if (currentFilename.endsWith(".cpp")) {
+                // Compile C++ source and run the resulting binary
+                pb = new ProcessBuilder("sh", "-c", "g++ \"" + currentFilename + "\" -o a.out && ./a.out");
+            } else if (currentFilename.endsWith(".c")) {
+                // Compile C source and run the resulting binary
+                pb = new ProcessBuilder("sh", "-c", "gcc \"" + currentFilename + "\" -o a.out && ./a.out");
+            } else if (currentFilename.endsWith(".java")) {
+                // Compile Java source and execute bytecode class
+                String className = currentFilename.replace(".java", "");
+                pb = new ProcessBuilder("sh", "-c", "javac \"" + currentFilename + "\" && java \"" + className + "\"");
+            } else if (currentFilename.endsWith(".py")) {
+                // Execute Python script directly
+                pb = new ProcessBuilder("python3", currentFilename);
+            } else {
+                // Default fallback: execute as Bash script
+                pb = new ProcessBuilder("bash", currentFilename);
+            }
+
+            // Inherit standard I/O for interactive CLI input/output (e.g., cin / Scanner)
+            pb.inheritIO();
+            Process process = pb.start();
+            process.waitFor(); // Wait until execution completes
+
+            // 4. Pause so the user can inspect output before returning to the editor
+            System.out.println("\n----------------------------------------");
+            System.out.print("Press [Enter] to return to the editor...");
+            System.in.read();
+
+            // 5. Restore the Lanterna TUI screen
+            screen.startScreen();
+            statusMessage = "Execution finished.";
+
+        } catch (Exception e) {
+            try {
+                screen.startScreen();
+            } catch (IOException ignored) {}
+            statusMessage = "Error running compiler: " + e.getMessage();
+        }
+    }
+
     private static void executeCommand(String input) {
         if (input.isEmpty()) {
             return;
@@ -401,7 +464,10 @@ public class Main {
             } else {
                 statusMessage = "Usage: r <old> <new>";
             }
-        } else {
+        } else if (cmd.equals("run") || cmd.equals("compile") || cmd.equals("c")) {
+            compileAndRun();
+        }
+        else {
             statusMessage = "Unknown command: " + cmd;
         }
     }
