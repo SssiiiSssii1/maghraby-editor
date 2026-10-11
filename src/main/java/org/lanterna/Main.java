@@ -156,7 +156,7 @@ public class Main {
         // 1. Render the top title bar
         tg.setBackgroundColor(TextColor.ANSI.BLUE);
         tg.setForegroundColor(TextColor.ANSI.WHITE);
-        String headerTitle = " Lanterna Editor | " + (currentFilename != null ? currentFilename : "[No Name]") + " -- Mode: " + currentMode;
+        String headerTitle = " maghraby Editor | " + (currentFilename != null ? currentFilename : "[No Name]") + " -- Mode: " + currentMode;
         tg.putString(0, 0, padRight(headerTitle, cols));
 
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
@@ -398,6 +398,7 @@ public class Main {
         try {
             screen.stopScreen();
 
+            new ProcessBuilder("sh", "-c", "stty sane").inheritIO().start().waitFor();
             System.out.println("========================================");
             System.out.println(" Compiling & Running: " + currentFilename);
             System.out.println("========================================\n");
