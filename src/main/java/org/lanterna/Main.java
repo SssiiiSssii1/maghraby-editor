@@ -1,3 +1,5 @@
+package org.lanterna;
+
 import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.TextColor;
@@ -8,7 +10,8 @@ import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.screen.TerminalScreen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
-import org.lanterna.HighlighterRegistry;
+import org.lanterna.syntax.HighlighterRegistry;
+import org.lanterna.syntax.SyntaxHighlighter;
 
 import java.io.IOException;
 
@@ -132,7 +135,7 @@ public class Main {
 
         tg.setBackgroundColor(TextColor.ANSI.BLUE);
         tg.setForegroundColor(TextColor.ANSI.WHITE);
-        tg.putString(0, 0, padRight(" Console Text Editor -- Mode: " + currentMode, cols));
+        tg.putString(0, 0, padRight(" Console Text org.lanterna.syntax.Editor -- Mode: " + currentMode, cols));
 
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
@@ -154,7 +157,7 @@ public class Main {
 
             String line = lines[i];
 
-            // تلوين ورسم السطر باستخدام الـ SyntaxHighlighter
+            // تلوين ورسم السطر باستخدام الـ org.lanterna.syntax.SyntaxHighlighter
             if (cols > 1) {
                 inBlockComment = highlighter.drawLine(tg, 1, screenRow, line, availableWidth, inBlockComment);
             }
