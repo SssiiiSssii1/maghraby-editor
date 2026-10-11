@@ -268,7 +268,10 @@ public class Main {
             return;
         }
 
-        if (key.getKeyType() == KeyType.Character) {
+        if (key.getKeyType() == KeyType.Tab) {
+            editor.insertAt(cursorIndex, "    ");
+            cursorIndex += 4;
+        } else if (key.getKeyType() == KeyType.Character) {
             char c = key.getCharacter();
 
             // Ignore control characters; Enter is handled separately below.
