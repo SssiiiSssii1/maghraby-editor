@@ -19,6 +19,9 @@ public class Main {
     private static final TextEditor editor = new TextEditor();
     private static final HighlighterRegistry highlighterRegistry = new HighlighterRegistry();
 
+    // Tracks the first line index displayed at the top of the terminal viewport (vertical scrolling offset)
+    private static int topLine = 0;
+
     private static String currentFilename = null;
     private static Screen screen;
     private static String statusMessage =
@@ -97,26 +100,43 @@ public class Main {
     }
 
     /**
-     * Convert the single text-buffer index into terminal coordinates.
-     * Text begins at column 1, row 2 because the header occupies row 0.
+     * Calculates the current line index (0-based) in the text buffer based on cursorIndex.
+     */
+    private static int getCursorLineIndex() {
+        String text = getText();
+        int index = Math.max(0, Math.min(cursorIndex, text.length()));
+        int line = 0;
+        for (int i = 0; i < index; i++) {
+            if (text.charAt(i) == '\n') {
+                line++;
+            }
+        }
+        return line;
+    }
+
+    /**
+     * Converts the 1D buffer cursor index into 2D terminal screen coordinates,
+     * taking the current vertical scroll offset (topLine) into account.
      */
     private static TerminalPosition getCursorPosition() {
         String text = getText();
         int index = Math.max(0, Math.min(cursorIndex, text.length()));
 
-        int row = 2;
+        int line = 0;
         int col = 1;
 
         for (int i = 0; i < index; i++) {
             if (text.charAt(i) == '\n') {
-                row++;
+                line++;
                 col = 1;
             } else {
                 col++;
             }
         }
 
-        return new TerminalPosition(col, row);
+        // Screen row = first text row (2) + (actual buffer line - scroll offset topLine)
+        int screenRow = 2 + (line - topLine);
+        return new TerminalPosition(col, screenRow);
     }
 
     private static void render(Screen screen) throws IOException {
@@ -133,36 +153,50 @@ public class Main {
 
         TextGraphics tg = screen.newTextGraphics();
 
+        // 1. Render the top title bar
         tg.setBackgroundColor(TextColor.ANSI.BLUE);
         tg.setForegroundColor(TextColor.ANSI.WHITE);
-        tg.putString(0, 0, padRight(" Console Text org.lanterna.syntax.Editor -- Mode: " + currentMode, cols));
+        String headerTitle = " Lanterna Editor | " + (currentFilename != null ? currentFilename : "[No Name]") + " -- Mode: " + currentMode;
+        tg.putString(0, 0, padRight(headerTitle, cols));
 
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
 
+        // 2. Calculate text viewport boundaries
         String[] lines = getText().split("\n", -1);
         int firstTextRow = 2;
         int lastTextRowExclusive = Math.max(firstTextRow, rows - 2);
+        int viewHeight = lastTextRowExclusive - firstTextRow; // Available vertical visible lines
         int availableWidth = Math.max(0, cols - 1);
 
-        // جلب الـ Highlighter المناسب للملف الحالي
+        // 3. Adjust vertical scroll offset (topLine) to ensure cursor stays visible
+        int cursorLine = getCursorLineIndex();
+        if (cursorLine < topLine) {
+            topLine = cursorLine;
+        } else if (cursorLine >= topLine + viewHeight) {
+            topLine = cursorLine - viewHeight + 1;
+        }
+
+        // 4. Resolve the syntax highlighter for the active file
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(currentFilename);
         boolean inBlockComment = false;
 
-        for (int i = 0; i < lines.length; i++) {
-            int screenRow = firstTextRow + i;
-            if (screenRow >= lastTextRowExclusive) {
+        // 5. Render visible lines starting from topLine offset
+        for (int i = 0; i < viewHeight; i++) {
+            int lineIndex = topLine + i;
+            if (lineIndex >= lines.length) {
                 break;
             }
 
-            String line = lines[i];
+            int screenRow = firstTextRow + i;
+            String line = lines[lineIndex];
 
-            // تلوين ورسم السطر باستخدام الـ org.lanterna.syntax.SyntaxHighlighter
             if (cols > 1) {
                 inBlockComment = highlighter.drawLine(tg, 1, screenRow, line, availableWidth, inBlockComment);
             }
         }
 
+        // 6. Render the bottom status line
         if (rows >= 2) {
             tg.setBackgroundColor(TextColor.ANSI.WHITE);
             tg.setForegroundColor(TextColor.ANSI.BLACK);
@@ -172,6 +206,7 @@ public class Main {
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
 
+        // 7. Update terminal cursor position
         if (currentMode == Mode.COMMAND && rows >= 1) {
             String commandLine = ":" + commandInput;
             tg.putString(0, rows - 1, clipToWidth(commandLine, cols));
