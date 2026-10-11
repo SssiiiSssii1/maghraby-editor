@@ -12,6 +12,7 @@ import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
 import org.lanterna.syntax.HighlighterRegistry;
 import org.lanterna.syntax.SyntaxHighlighter;
+import org.lanterna.syntax.HighlightState;
 
 import java.io.IOException;
 
@@ -179,7 +180,7 @@ public class Main {
 
         // 4. Resolve the syntax highlighter for the active file
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(currentFilename);
-        boolean inBlockComment = false;
+        HighlightState highlightState = HighlightState.NORMAL;
 
         // 5. Render visible lines starting from topLine offset
         for (int i = 0; i < viewHeight; i++) {
@@ -192,7 +193,7 @@ public class Main {
             String line = lines[lineIndex];
 
             if (cols > 1) {
-                inBlockComment = highlighter.drawLine(tg, 1, screenRow, line, availableWidth, inBlockComment);
+                highlightState = highlighter.drawLine(tg, 1, screenRow, line, availableWidth, highlightState);
             }
         }
 
