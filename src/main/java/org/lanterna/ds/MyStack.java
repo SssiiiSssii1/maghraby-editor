@@ -1,3 +1,5 @@
+package org.lanterna.ds;
+
 /**
  * Custom LIFO (Last-In-First-Out) stack implementation using a singly linked list.
  * Specifically used for managing history states in Undo and Redo operations.

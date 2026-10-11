@@ -1,3 +1,7 @@
 target/
 .idea/
 *.iml
+a.out
+test.txt
+test.cpp
+dependency-reduced-pom.xml

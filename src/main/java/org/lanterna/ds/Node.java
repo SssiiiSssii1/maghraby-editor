@@ -1,3 +1,5 @@
+package org.lanterna.ds;
+
 /**
  * Represents a single node in a singly linked list.
  * Used as the building block for the custom Stack data structure.

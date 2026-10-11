@@ -8,11 +8,13 @@ import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.screen.TerminalScreen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
+import org.lanterna.HighlighterRegistry;
 
 import java.io.IOException;
 
 public class Main {
     private static final TextEditor editor = new TextEditor();
+    private static final HighlighterRegistry highlighterRegistry = new HighlighterRegistry();
 
     private static String currentFilename = null;
     private static Screen screen;
@@ -140,6 +142,10 @@ public class Main {
         int lastTextRowExclusive = Math.max(firstTextRow, rows - 2);
         int availableWidth = Math.max(0, cols - 1);
 
+        // جلب الـ Highlighter المناسب للملف الحالي
+        SyntaxHighlighter highlighter = highlighterRegistry.forFileName(currentFilename);
+        boolean inBlockComment = false;
+
         for (int i = 0; i < lines.length; i++) {
             int screenRow = firstTextRow + i;
             if (screenRow >= lastTextRowExclusive) {
@@ -147,12 +153,10 @@ public class Main {
             }
 
             String line = lines[i];
-            String visibleLine = line.length() > availableWidth
-                    ? line.substring(0, availableWidth)
-                    : line;
 
-            if (!visibleLine.isEmpty() && cols > 1) {
-                tg.putString(1, screenRow, visibleLine);
+            // تلوين ورسم السطر باستخدام الـ SyntaxHighlighter
+            if (cols > 1) {
+                inBlockComment = highlighter.drawLine(tg, 1, screenRow, line, availableWidth, inBlockComment);
             }
         }
 
@@ -345,58 +349,43 @@ public class Main {
         }
     }
 
-    /**
-     * Saves the buffer and executes the appropriate compiler/interpreter
-     * based on file extension, temporarily suspending the Lanterna TUI.
-     */
     private static void compileAndRun() {
         if (currentFilename == null || currentFilename.isEmpty()) {
             statusMessage = "Error: Save the file first with :w <filename>";
             return;
         }
 
-        // 1. Save the latest buffer changes to disk before compilation
         editor.saveToFile(currentFilename);
 
         try {
-            // 2. Temporarily stop Lanterna screen to hand over control to the real terminal
             screen.stopScreen();
 
             System.out.println("========================================");
             System.out.println(" Compiling & Running: " + currentFilename);
             System.out.println("========================================\n");
 
-            // 3. Select compiler/interpreter command based on file extension
             ProcessBuilder pb;
             if (currentFilename.endsWith(".cpp")) {
-                // Compile C++ source and run the resulting binary
                 pb = new ProcessBuilder("sh", "-c", "g++ \"" + currentFilename + "\" -o a.out && ./a.out");
             } else if (currentFilename.endsWith(".c")) {
-                // Compile C source and run the resulting binary
                 pb = new ProcessBuilder("sh", "-c", "gcc \"" + currentFilename + "\" -o a.out && ./a.out");
             } else if (currentFilename.endsWith(".java")) {
-                // Compile Java source and execute bytecode class
                 String className = currentFilename.replace(".java", "");
                 pb = new ProcessBuilder("sh", "-c", "javac \"" + currentFilename + "\" && java \"" + className + "\"");
             } else if (currentFilename.endsWith(".py")) {
-                // Execute Python script directly
                 pb = new ProcessBuilder("python3", currentFilename);
             } else {
-                // Default fallback: execute as Bash script
                 pb = new ProcessBuilder("bash", currentFilename);
             }
 
-            // Inherit standard I/O for interactive CLI input/output (e.g., cin / Scanner)
             pb.inheritIO();
             Process process = pb.start();
-            process.waitFor(); // Wait until execution completes
+            process.waitFor();
 
-            // 4. Pause so the user can inspect output before returning to the editor
             System.out.println("\n----------------------------------------");
             System.out.print("Press [Enter] to return to the editor...");
             System.in.read();
 
-            // 5. Restore the Lanterna TUI screen
             screen.startScreen();
             statusMessage = "Execution finished.";
 
@@ -420,7 +409,6 @@ public class Main {
         if (cmd.equals("q") || cmd.equals("exit")) {
             running = false;
         } else if (cmd.equals("w") || cmd.equals("write") || cmd.equals("save")) {
-            // 1. حفظ الملف (يدعم :w filename.txt أو :w السريع)
             if (!args.isEmpty()) {
                 currentFilename = args;
                 statusMessage = editor.saveToFile(currentFilename);
@@ -430,11 +418,10 @@ public class Main {
                 statusMessage = "Usage: :w <filename.txt>";
             }
         } else if (cmd.equals("load") || cmd.equals("e") || cmd.equals("open")) {
-            // 2. فتح ملف موجود
             if (!args.isEmpty()) {
                 currentFilename = args;
                 statusMessage = editor.loadFromFile(currentFilename);
-                cursorIndex = 0; // إعادة المؤشر للبداية بعد التحميل
+                cursorIndex = 0;
             } else {
                 statusMessage = "Usage: :e <filename.txt> or :load <filename.txt>";
             }
@@ -466,8 +453,7 @@ public class Main {
             }
         } else if (cmd.equals("run") || cmd.equals("compile") || cmd.equals("c")) {
             compileAndRun();
-        }
-        else {
+        } else {
             statusMessage = "Unknown command: " + cmd;
         }
     }

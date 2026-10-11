@@ -1,8 +1,10 @@
-/**
+package org.lanterna; /**
  * Core text editor engine.
  * Manages the current text buffer, modifications (insert, delete, replace, find),
  * and state history for Undo/Redo operations using custom stacks.
  */
+
+import org.lanterna.ds.MyStack;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
