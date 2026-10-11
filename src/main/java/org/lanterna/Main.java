@@ -398,23 +398,24 @@ public class Main {
         try {
             screen.stopScreen();
 
-            new ProcessBuilder("sh", "-c", "stty sane").inheritIO().start().waitFor();
+            new ProcessBuilder("sh", "-c", "stty sane < /dev/tty 2>/dev/null || stty sane 2>/dev/null").inheritIO().start().waitFor();
+
             System.out.println("========================================");
             System.out.println(" Compiling & Running: " + currentFilename);
             System.out.println("========================================\n");
 
             ProcessBuilder pb;
             if (currentFilename.endsWith(".cpp")) {
-                pb = new ProcessBuilder("sh", "-c", "g++ \"" + currentFilename + "\" -o a.out && ./a.out");
+                pb = new ProcessBuilder("sh", "-c", "stty sane && g++ \"" + currentFilename + "\" -o a.out && ./a.out");
             } else if (currentFilename.endsWith(".c")) {
-                pb = new ProcessBuilder("sh", "-c", "gcc \"" + currentFilename + "\" -o a.out && ./a.out");
+                pb = new ProcessBuilder("sh", "-c", "stty sane && gcc \"" + currentFilename + "\" -o a.out && ./a.out");
             } else if (currentFilename.endsWith(".java")) {
                 String className = currentFilename.replace(".java", "");
-                pb = new ProcessBuilder("sh", "-c", "javac \"" + currentFilename + "\" && java \"" + className + "\"");
+                pb = new ProcessBuilder("sh", "-c", "stty sane && javac \"" + currentFilename + "\" && java \"" + className + "\"");
             } else if (currentFilename.endsWith(".py")) {
-                pb = new ProcessBuilder("python3", currentFilename);
+                pb = new ProcessBuilder("sh", "-c", "stty sane && python3 \"" + currentFilename + "\"");
             } else {
-                pb = new ProcessBuilder("bash", currentFilename);
+                pb = new ProcessBuilder("sh", "-c", "stty sane && bash \"" + currentFilename + "\"");
             }
 
             pb.inheritIO();
@@ -422,16 +423,19 @@ public class Main {
             process.waitFor();
 
             System.out.println("\n----------------------------------------");
-            System.out.print("Press [Enter] to return to the editor...");
+            System.out.println("Press [Enter] to return to the editor...");
             System.in.read();
+
+            new ProcessBuilder("sh", "-c", "stty -icanon -echo min 1 < /dev/tty 2>/dev/null").inheritIO().start().waitFor();
 
             screen.startScreen();
             statusMessage = "Execution finished.";
 
         } catch (Exception e) {
             try {
+                new ProcessBuilder("sh", "-c", "stty -icanon -echo min 1 < /dev/tty 2>/dev/null").inheritIO().start().waitFor();
                 screen.startScreen();
-            } catch (IOException ignored) {}
+            } catch (IOException | InterruptedException ignored) {}
             statusMessage = "Error running compiler: " + e.getMessage();
         }
     }
