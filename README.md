@@ -100,4 +100,4 @@ Or execute the packaged shaded JAR directly:
 java -jar target/lanterna-editor-1.0-SNAPSHOT.jar [filename]
 ```
 
-Developed with ❤️ by Mohammed Elmaghraby.
+Engineered with ❤️ by Mohammed Elmaghraby.
