@@ -20,19 +20,22 @@ public class Main {
     private static final TextEditor editor = new TextEditor();
     private static final HighlighterRegistry highlighterRegistry = new HighlighterRegistry();
 
-    // Tracks the first line index displayed at the top of the terminal viewport (vertical scrolling offset)
     private static int topLine = 0;
-
     private static String currentFilename = null;
+
+    private static final DefaultTerminalFactory factory = new DefaultTerminalFactory();
+    private static Terminal terminal;
     private static Screen screen;
+
     private static String statusMessage =
-            "NORMAL MODE | i: Insert | :: Command | u: Undo | Ctrl+R: Redo | q: Quit\n Made with ❤\uFE0F by Mohammed Elmaghraby";
+            "NORMAL MODE | i: Insert | :: Command | u: Undo | Ctrl+R: Redo | q: Quit";
     private static Mode currentMode = Mode.NORMAL;
     private static final StringBuilder commandInput = new StringBuilder();
 
-    // The cursor has one source of truth: its index inside the text buffer.
     private static int cursorIndex = 0;
     private static boolean running = true;
+
+    private static volatile boolean resizePending = false;
 
     enum Mode {
         NORMAL,
@@ -40,74 +43,149 @@ public class Main {
         COMMAND
     }
 
+    /**
+     * Initializes or re-initializes a fresh terminal and screen instance.
+     * This guarantees that Lanterna's buffers are clean and forces a full redraw.
+     */
+    private static void initScreen() throws IOException {
+        terminal = factory.createTerminal();
+        terminal.addResizeListener((t, newSize) -> {
+            resizePending = true; // Flag the main loop to handle redraw safely
+        });
+
+        screen = new TerminalScreen(terminal);
+        screen.startScreen();
+        screen.setCursorPosition(null);
+    }
+
     public static void main(String[] args) {
-        DefaultTerminalFactory factory = new DefaultTerminalFactory();
-
         try {
-            Terminal terminal = factory.createTerminal();
-            screen = new TerminalScreen(terminal);
-
-            terminal.addResizeListener((t, newSize) -> {
-
-                try {
-
-                    screen.doResizeIfNecessary();
-
-                    render(screen);
-
-                } catch (IOException ignored) {}
-
-            });
-
-            screen.startScreen();
-            screen.setCursorPosition(null);
+            initScreen();
 
             if (args.length > 0 && !args[0].trim().isEmpty()) {
                 currentFilename = args[0].trim();
                 statusMessage = editor.loadFromFile(currentFilename);
             }
 
+            render(screen);
+
             while (running) {
-                if (screen.doResizeIfNecessary() != null) {
+                // 1. Check if the window was resized
+                boolean resized = resizePending || (screen.doResizeIfNecessary() != null);
+                if (resized) {
+                    resizePending = false;
                     render(screen);
                 }
 
+                // 2. Non-blocking key check
                 KeyStroke key = screen.pollInput();
 
-                if (key == null) {
-                    Thread.sleep(10);
-                    continue;
-                }
+                if (key != null) {
+                    switch (currentMode) {
+                        case NORMAL:
+                            handleNormalMode(key);
+                            break;
+                        case INSERT:
+                            handleInsertMode(key);
+                            break;
+                        case COMMAND:
+                            handleCommandMode(key);
+                            break;
+                        default:
+                            break;
+                    }
 
-                switch (currentMode) {
-                    case NORMAL:
-                        handleNormalMode(key);
-                        break;
-                    case INSERT:
-                        handleInsertMode(key);
-                        break;
-                    case COMMAND:
-                        handleCommandMode(key);
-                        break;
-                    default:
-                        break;
+                    clampCursorIndex();
+                    render(screen);
+                } else if (!resized) {
+                    // Sleep briefly (10ms) when idle to prevent CPU spikes
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException ignored) {}
                 }
-
-                clampCursorIndex();
-                render(screen);
             }
         } catch (IOException e) {
             e.printStackTrace();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
         } finally {
-            if (screen != null) {
-                try {
-                    screen.stopScreen();
-                } catch (IOException ignored) {
-                    // The terminal is already closing.
-                }
+            cleanup();
+        }
+    }
+
+    private static void cleanup() {
+        if (screen != null) {
+            try {
+                screen.stopScreen();
+                screen.close();
+            } catch (IOException ignored) {}
+        }
+        if (terminal != null) {
+            try {
+                terminal.close();
+            } catch (IOException ignored) {}
+        }
+        System.out.print("\033[0m");
+        System.out.flush();
+    }
+
+    private static void compileAndRun() {
+        if (currentFilename == null || currentFilename.isEmpty()) {
+            statusMessage = "Error: Save the file first with :w <filename>";
+            return;
+        }
+
+        editor.saveToFile(currentFilename);
+
+        try {
+            // 1. Properly close screen and terminal to release raw mode and reader threads
+            screen.stopScreen();
+            screen.close();
+            terminal.close();
+
+            // 2. Explicitly reset ANSI colors so child process output has normal background
+            System.out.print("\033[0m");
+            System.out.flush();
+
+            System.out.println("========================================");
+            System.out.println(" Compiling & Running: " + currentFilename);
+            System.out.println("========================================\n");
+
+            ProcessBuilder pb;
+            if (currentFilename.endsWith(".cpp")) {
+                pb = new ProcessBuilder("sh", "-c", "g++ \"" + currentFilename + "\" -o a.out && ./a.out");
+            } else if (currentFilename.endsWith(".c")) {
+                pb = new ProcessBuilder("sh", "-c", "gcc \"" + currentFilename + "\" -o a.out && ./a.out");
+            } else if (currentFilename.endsWith(".java")) {
+                String className = currentFilename.replace(".java", "");
+                pb = new ProcessBuilder("sh", "-c", "javac \"" + currentFilename + "\" && java \"" + className + "\"");
+            } else if (currentFilename.endsWith(".py")) {
+                pb = new ProcessBuilder("sh", "-c", "python3 \"" + currentFilename + "\"");
+            } else {
+                pb = new ProcessBuilder("sh", "-c", "bash \"" + currentFilename + "\"");
             }
+
+            pb.inheritIO();
+            Process process = pb.start();
+            process.waitFor();
+
+            System.out.println("\n----------------------------------------");
+            System.out.println("Press [Enter] to return to the editor...");
+            System.in.read();
+
+            // Clear any lingering input characters
+            while (System.in.available() > 0) {
+                System.in.read();
+            }
+
+            // 3. Create a fresh screen. Clean buffers guarantee immediate rendering!
+            initScreen();
+            statusMessage = "Execution finished.";
+            render(screen);
+
+        } catch (Exception e) {
+            try {
+                initScreen();
+            } catch (IOException ignored) {}
+            statusMessage = "Error running compiler: " + e.getMessage();
         }
     }
 
@@ -120,9 +198,6 @@ public class Main {
         cursorIndex = Math.max(0, Math.min(cursorIndex, getText().length()));
     }
 
-    /**
-     * Calculates the current line index (0-based) in the text buffer based on cursorIndex.
-     */
     private static int getCursorLineIndex() {
         String text = getText();
         int index = Math.max(0, Math.min(cursorIndex, text.length()));
@@ -135,10 +210,6 @@ public class Main {
         return line;
     }
 
-    /**
-     * Converts the 1D buffer cursor index into 2D terminal screen coordinates,
-     * taking the current vertical scroll offset (topLine) into account.
-     */
     private static TerminalPosition getCursorPosition() {
         String text = getText();
         int index = Math.max(0, Math.min(cursorIndex, text.length()));
@@ -155,7 +226,6 @@ public class Main {
             }
         }
 
-        // Screen row = first text row (2) + (actual buffer line - scroll offset topLine)
         int screenRow = 2 + (line - topLine);
         return new TerminalPosition(col, screenRow);
     }
@@ -175,7 +245,7 @@ public class Main {
 
         TextGraphics tg = screen.newTextGraphics();
 
-        // 1. Render the top title bar
+        // 1. Title bar
         tg.setBackgroundColor(TextColor.ANSI.BLUE);
         tg.setForegroundColor(TextColor.ANSI.WHITE);
         String headerTitle = " maghraby Editor | " + (currentFilename != null ? currentFilename : "[No Name]") + " -- Mode: " + currentMode;
@@ -184,14 +254,14 @@ public class Main {
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
 
-        // 2. Calculate text viewport boundaries
+        // 2. Viewport calculation
         String[] lines = getText().split("\n", -1);
         int firstTextRow = 2;
         int lastTextRowExclusive = Math.max(firstTextRow, rows - 2);
-        int viewHeight = lastTextRowExclusive - firstTextRow; // Available vertical visible lines
+        int viewHeight = lastTextRowExclusive - firstTextRow;
         int availableWidth = Math.max(0, cols - 1);
 
-        // 3. Adjust vertical scroll offset (topLine) to ensure cursor stays visible
+        // 3. Scroll offset
         int cursorLine = getCursorLineIndex();
         if (cursorLine < topLine) {
             topLine = cursorLine;
@@ -199,11 +269,11 @@ public class Main {
             topLine = cursorLine - viewHeight + 1;
         }
 
-        // 4. Resolve the syntax highlighter for the active file
+        // 4. Syntax highlighting
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(currentFilename);
         HighlightState highlightState = HighlightState.NORMAL;
 
-        // 5. Render visible lines starting from topLine offset
+        // 5. Draw text
         for (int i = 0; i < viewHeight; i++) {
             int lineIndex = topLine + i;
             if (lineIndex >= lines.length) {
@@ -218,26 +288,22 @@ public class Main {
             }
         }
 
-        // 6. Render the bottom status line
+        // 6. Bottom status line + Credit
         if (rows >= 2) {
             tg.setBackgroundColor(TextColor.ANSI.WHITE);
             tg.setForegroundColor(TextColor.ANSI.BLACK);
             tg.putString(0, rows - 2, padRight(" " + statusMessage, cols));
-        }
 
-        // Fill the background and display the status message on the left
-        tg.putString(0, rows - 2, padRight(" " + statusMessage, cols));
-
-        // Place attribution on the right edge
-        String credit = "Made with ❤ by Mohammed Elmaghraby ";
-        if (cols >= credit.length()) {
-            tg.putString(cols - credit.length(), rows - 2, credit);
+            String credit = "Made with ❤ by Mohammed Elmaghraby ";
+            if (cols >= credit.length()) {
+                tg.putString(cols - credit.length(), rows - 2, credit);
+            }
         }
 
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
         tg.setForegroundColor(TextColor.ANSI.DEFAULT);
 
-        // 7. Update terminal cursor position
+        // 7. Cursor placement
         if (currentMode == Mode.COMMAND && rows >= 1) {
             String commandLine = ":" + commandInput;
             tg.putString(0, rows - 1, clipToWidth(commandLine, cols));
@@ -268,7 +334,7 @@ public class Main {
             } else if (c == ':') {
                 currentMode = Mode.COMMAND;
                 commandInput.setLength(0);
-                statusMessage = "Commands: w <text>, d <count|word>, f <word>, r <old> <new>, q";
+                statusMessage = "Commands: w <text>, d <count|word>, f <word>, r <old> <new>, run, q";
             } else if (c == 'u') {
                 statusMessage = editor.undo();
                 clampCursorIndex();
@@ -304,7 +370,6 @@ public class Main {
         } else if (key.getKeyType() == KeyType.Character) {
             char c = key.getCharacter();
 
-            // Ignore control characters; Enter is handled separately below.
             if (!Character.isISOControl(c)) {
                 editor.insertAt(cursorIndex, String.valueOf(c));
                 cursorIndex++;
@@ -360,9 +425,6 @@ public class Main {
         }
     }
 
-    /**
-     * Move one logical line up or down, keeping the cursor's column when possible.
-     */
     private static void moveCursorVertical(String text, int direction) {
         int currentLineStart = text.lastIndexOf('\n', Math.max(-1, cursorIndex - 1)) + 1;
         int desiredColumn = cursorIndex - currentLineStart;
@@ -418,59 +480,6 @@ public class Main {
             if (!Character.isISOControl(c)) {
                 commandInput.append(c);
             }
-        }
-    }
-
-    private static void compileAndRun() {
-        if (currentFilename == null || currentFilename.isEmpty()) {
-            statusMessage = "Error: Save the file first with :w <filename>";
-            return;
-        }
-
-        editor.saveToFile(currentFilename);
-
-        try {
-            screen.stopScreen();
-
-            new ProcessBuilder("sh", "-c", "stty sane < /dev/tty 2>/dev/null || stty sane 2>/dev/null").inheritIO().start().waitFor();
-
-            System.out.println("========================================");
-            System.out.println(" Compiling & Running: " + currentFilename);
-            System.out.println("========================================\n");
-
-            ProcessBuilder pb;
-            if (currentFilename.endsWith(".cpp")) {
-                pb = new ProcessBuilder("sh", "-c", "stty sane && g++ \"" + currentFilename + "\" -o a.out && ./a.out");
-            } else if (currentFilename.endsWith(".c")) {
-                pb = new ProcessBuilder("sh", "-c", "stty sane && gcc \"" + currentFilename + "\" -o a.out && ./a.out");
-            } else if (currentFilename.endsWith(".java")) {
-                String className = currentFilename.replace(".java", "");
-                pb = new ProcessBuilder("sh", "-c", "stty sane && javac \"" + currentFilename + "\" && java \"" + className + "\"");
-            } else if (currentFilename.endsWith(".py")) {
-                pb = new ProcessBuilder("sh", "-c", "stty sane && python3 \"" + currentFilename + "\"");
-            } else {
-                pb = new ProcessBuilder("sh", "-c", "stty sane && bash \"" + currentFilename + "\"");
-            }
-
-            pb.inheritIO();
-            Process process = pb.start();
-            process.waitFor();
-
-            System.out.println("\n----------------------------------------");
-            System.out.println("Press [Enter] to return to the editor...");
-            System.in.read();
-
-            new ProcessBuilder("sh", "-c", "stty -icanon -echo min 1 < /dev/tty 2>/dev/null").inheritIO().start().waitFor();
-
-            screen.startScreen();
-            statusMessage = "Execution finished.";
-
-        } catch (Exception e) {
-            try {
-                new ProcessBuilder("sh", "-c", "stty -icanon -echo min 1 < /dev/tty 2>/dev/null").inheritIO().start().waitFor();
-                screen.startScreen();
-            } catch (IOException | InterruptedException ignored) {}
-            statusMessage = "Error running compiler: " + e.getMessage();
         }
     }
 
