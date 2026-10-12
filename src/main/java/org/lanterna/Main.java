@@ -26,7 +26,7 @@ public class Main {
     private static String currentFilename = null;
     private static Screen screen;
     private static String statusMessage =
-            "NORMAL MODE | i: Insert | :: Command | u: Undo | Ctrl+R: Redo | q: Quit";
+            "NORMAL MODE | i: Insert | :: Command | u: Undo | Ctrl+R: Redo | q: Quit\n Made with ❤\uFE0F by Mohammed Elmaghraby";
     private static Mode currentMode = Mode.NORMAL;
     private static final StringBuilder commandInput = new StringBuilder();
 
@@ -46,6 +46,19 @@ public class Main {
         try {
             Terminal terminal = factory.createTerminal();
             screen = new TerminalScreen(terminal);
+
+            terminal.addResizeListener((t, newSize) -> {
+
+                try {
+
+                    screen.doResizeIfNecessary();
+
+                    render(screen);
+
+                } catch (IOException ignored) {}
+
+            });
+
             screen.startScreen();
             screen.setCursorPosition(null);
 
@@ -55,10 +68,14 @@ public class Main {
             }
 
             while (running) {
-                render(screen);
-                KeyStroke key = screen.readInput();
+                if (screen.doResizeIfNecessary() != null) {
+                    render(screen);
+                }
+
+                KeyStroke key = screen.pollInput();
 
                 if (key == null) {
+                    Thread.sleep(10);
                     continue;
                 }
 
@@ -77,9 +94,12 @@ public class Main {
                 }
 
                 clampCursorIndex();
+                render(screen);
             }
         } catch (IOException e) {
             e.printStackTrace();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         } finally {
             if (screen != null) {
                 try {
@@ -141,6 +161,7 @@ public class Main {
     }
 
     private static void render(Screen screen) throws IOException {
+        screen.doResizeIfNecessary();
         screen.clear();
 
         TerminalSize size = screen.getTerminalSize();
@@ -202,6 +223,15 @@ public class Main {
             tg.setBackgroundColor(TextColor.ANSI.WHITE);
             tg.setForegroundColor(TextColor.ANSI.BLACK);
             tg.putString(0, rows - 2, padRight(" " + statusMessage, cols));
+        }
+
+        // Fill the background and display the status message on the left
+        tg.putString(0, rows - 2, padRight(" " + statusMessage, cols));
+
+        // Place attribution on the right edge
+        String credit = "Made with ❤ by Mohammed Elmaghraby ";
+        if (cols >= credit.length()) {
+            tg.putString(cols - credit.length(), rows - 2, credit);
         }
 
         tg.setBackgroundColor(TextColor.ANSI.DEFAULT);
