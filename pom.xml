@@ -28,7 +28,7 @@
         <configuration>
           <archive>
             <manifest>
-              <mainClass>org.lanterna.Main</mainClass>
+              <mainClass>org.maghraby.Main</mainClass>
             </manifest>
           </archive>
         </configuration>

@@ -1,4 +1,4 @@
-package org.lanterna.syntax;
+package org.maghraby.syntax;
 
 /**
  * Strategy interface defining how a single line is tokenized and styled with ANSI codes.

@@ -1,9 +1,9 @@
-package org.lanterna;
+package org.maghraby;
 
-import org.lanterna.syntax.HighlightState;
-import org.lanterna.syntax.HighlighterRegistry;
-import org.lanterna.syntax.SyntaxHighlighter;
-import org.lanterna.syntax.SyntaxHighlighter.HighlightResult;
+import org.maghraby.syntax.HighlightState;
+import org.maghraby.syntax.HighlighterRegistry;
+import org.maghraby.syntax.SyntaxHighlighter;
+import org.maghraby.syntax.SyntaxHighlighter.HighlightResult;
 
 import java.io.BufferedOutputStream;
 import java.io.FileDescriptor;

@@ -1,4 +1,4 @@
-package org.lanterna.syntax;
+package org.maghraby.syntax;
 
 /**
  * Fallback highlighter for unhandled extensions or raw text files.

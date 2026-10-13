@@ -1,7 +1,7 @@
-package org.lanterna;
+package org.maghraby;
 
-import org.lanterna.ds.EditAction;
-import org.lanterna.ds.MyStack;
+import org.maghraby.ds.EditAction;
+import org.maghraby.ds.MyStack;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;

@@ -1,4 +1,4 @@
-package org.lanterna.ds;
+package org.maghraby.ds;
 
 public class MyStack {
     private Node top;

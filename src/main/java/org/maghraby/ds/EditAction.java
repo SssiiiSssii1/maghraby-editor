@@ -1,4 +1,4 @@
-package org.lanterna.ds;
+package org.maghraby.ds;
 
 /**
  * Represents a single microscopic edit (Delta) in the editor.

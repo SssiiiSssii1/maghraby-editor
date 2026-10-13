@@ -1,4 +1,4 @@
-package org.lanterna.syntax;
+package org.maghraby.syntax;
 
 /**
  * Tracks parser state across lines to maintain multi-line token integrity.

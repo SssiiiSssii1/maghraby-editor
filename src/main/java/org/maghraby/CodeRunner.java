@@ -1,4 +1,4 @@
-package org.lanterna;
+package org.maghraby;
 
 import java.io.File;
 import java.io.IOException;
@@ -161,7 +161,7 @@ public final class CodeRunner {
                                 ? "No C compiler found (tried gcc, clang, cc). Install one and put it on PATH."
                                 : "No C++ compiler found (tried g++, clang++, c++). Install one and put it on PATH.");
                     }
-                    build = Files.createTempDirectory("lanterna-build-");
+                    build = Files.createTempDirectory("maghraby-build-");
                     Path exe = build.resolve(exeName);
 
                     List<String> compile = cmd(compiler, "-Wall", "-o", exe.toString(), file.toString());

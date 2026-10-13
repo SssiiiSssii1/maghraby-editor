@@ -1,4 +1,4 @@
-package org.lanterna.syntax;
+package org.maghraby.syntax;
 
 import java.util.Set;
 
