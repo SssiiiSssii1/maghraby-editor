@@ -80,7 +80,7 @@ A lightweight, zero-dependency, modal terminal text editor built entirely from s
 
 Clone the repository:
 ```bash
-git clone [https://github.com/mohammed1elmaghraby/maghraby-editor.git](https://github.com/mohammed1elmaghraby/maghraby-editor.git)
+git clone https://github.com/mohammed1elmaghraby/maghraby-editor.git
 cd maghraby-editor
 ```
 Build the JAR:
