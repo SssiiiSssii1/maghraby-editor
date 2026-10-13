@@ -1,46 +1,45 @@
 package org.lanterna.ds;
 
-/**
- * Custom LIFO (Last-In-First-Out) stack implementation using a singly linked list.
- * Specifically used for managing history states in Undo and Redo operations.
- */
 public class MyStack {
-    private Node top; // Pointer to the top element of the stack
+    private Node top;
+    private int size = 0;
+    // تم رفع الحد الأقصى لأن الـ Deltas تستهلك مساحة شبه معدومة مقارنة بالملفات
+    private static final int MAX_CAPACITY = 1500;
 
-    /**
-     * Pushes a new text snapshot onto the top of the stack.
-     * @param data The text state to save.
-     */
-    public void push(String data) {
+    public void push(EditAction data) {
+        if (size >= MAX_CAPACITY) {
+            removeBottom();
+        }
         Node newNode = new Node(data);
         newNode.next = top;
         top = newNode;
+        size++;
     }
 
-    /**
-     * Pops and returns the most recent text snapshot from the stack.
-     * @return The popped string data, or null if the stack is empty.
-     */
-    public String pop() {
+    public EditAction pop() {
         if (isEmpty()) return null;
-
-        String savedData = top.data;
+        EditAction savedData = top.data;
         top = top.next;
+        size--;
         return savedData;
     }
 
-    /**
-     * Checks whether the stack contains any elements.
-     * @return True if the stack is empty, false otherwise.
-     */
     public boolean isEmpty() {
         return top == null;
     }
 
-    /**
-     * Clears all elements from the stack (used when a new action breaks the redo history).
-     */
     public void clear() {
         top = null;
+        size = 0;
+    }
+
+    private void removeBottom() {
+        if (top == null || top.next == null) return;
+        Node current = top;
+        while (current.next != null && current.next.next != null) {
+            current = current.next;
+        }
+        current.next = null;
+        size--;
     }
 }

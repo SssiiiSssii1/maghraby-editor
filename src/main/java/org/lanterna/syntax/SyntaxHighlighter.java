@@ -1,24 +1,31 @@
 package org.lanterna.syntax;
 
-import com.googlecode.lanterna.graphics.TextGraphics;
-
 /**
- * Strategy interface defining how a single line is tokenized, styled, and rendered.
+ * Strategy interface defining how a single line is tokenized and styled with ANSI codes.
  */
 public interface SyntaxHighlighter {
 
     /**
-     * Renders a single line with syntax highlighting while tracking multi-line state.
-     *
-     * @param tg       Lanterna text graphics target.
-     * @param x        Terminal column offset.
-     * @param y        Terminal row index.
-     * @param line     The raw line text.
-     * @param maxWidth Maximum displayable terminal columns.
-     * @param state    Parser state at the start of this line.
-     * @return Updated parser state at the end of this line.
+     * كلاس مساعد لإرجاع النص الملون مع حالة المحلل (State) معاً
      */
-    HighlightState drawLine(TextGraphics tg, int x, int y, String line, int maxWidth, HighlightState state);
+    class HighlightResult {
+        public final String coloredLine;
+        public final HighlightState nextState;
+
+        public HighlightResult(String coloredLine, HighlightState nextState) {
+            this.coloredLine = coloredLine;
+            this.nextState = nextState;
+        }
+    }
+
+    /**
+     * يقوم بتحليل السطر وإضافة رموز ANSI للألوان.
+     *
+     * @param line  النص الأصلي للسطر.
+     * @param state حالة المحلل في بداية هذا السطر (مثلاً: هل نحن داخل تعليق متعدد السطور؟).
+     * @return نتيجة تحتوي على النص الملون برموز ANSI وحالة المحلل الجديدة.
+     */
+    HighlightResult highlightLine(String line, HighlightState state);
 
     /**
      * Checks if this highlighter supports the specified file extension.

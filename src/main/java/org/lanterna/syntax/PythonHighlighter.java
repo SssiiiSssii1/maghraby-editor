@@ -1,12 +1,9 @@
 package org.lanterna.syntax;
 
-import com.googlecode.lanterna.TextColor;
-import com.googlecode.lanterna.graphics.TextGraphics;
-
 import java.util.Set;
 
 /**
- * Syntax highlighter for Python source code.
+ * Syntax highlighter for Python source code using ANSI escape codes.
  */
 public class PythonHighlighter implements SyntaxHighlighter {
 
@@ -23,42 +20,53 @@ public class PythonHighlighter implements SyntaxHighlighter {
             "tuple", "super", "isinstance", "type", "open", "enumerate", "zip"
     );
 
+    // ثوابت ألوان ANSI
+    private static final String ANSI_RESET = "\033[0m";
+    private static final String ANSI_GREEN = "\033[32m";
+    private static final String ANSI_YELLOW = "\033[33m";
+    private static final String ANSI_MAGENTA = "\033[35m";
+    private static final String ANSI_CYAN = "\033[36m";
+    private static final String ANSI_BLUE = "\033[34m";
+    private static final String ANSI_RED = "\033[31m";
+
     @Override
     public boolean supportsExtension(String extension) {
         return "py".equalsIgnoreCase(extension);
     }
 
     @Override
-    public HighlightState drawLine(TextGraphics tg, int x, int y, String line, int maxWidth, HighlightState state) {
+    public HighlightResult highlightLine(String line, HighlightState state) {
+        StringBuilder resultLine = new StringBuilder();
         int i = 0;
-        int drawn = 0;
+        String currentColor = ANSI_RESET;
+        HighlightState nextState = state;
 
         while (i < line.length()) {
             char c = line.charAt(i);
             String token;
-            TextColor color;
+            String newColor;
             int tokenLength;
 
-            // 1. Ongoing multi-line docstring continuation with strict delimiter matching
-            if (state == HighlightState.PY_TRIPLE_DOUBLE || state == HighlightState.PY_TRIPLE_SINGLE) {
-                String closingQuote = (state == HighlightState.PY_TRIPLE_DOUBLE) ? "\"\"\"" : "'''";
+            // 1. Ongoing multi-line docstring continuation
+            if (nextState == HighlightState.PY_TRIPLE_DOUBLE || nextState == HighlightState.PY_TRIPLE_SINGLE) {
+                String closingQuote = (nextState == HighlightState.PY_TRIPLE_DOUBLE) ? "\"\"\"" : "'''";
                 int end = line.indexOf(closingQuote, i);
 
                 if (end == -1) {
                     token = line.substring(i);
                 } else {
                     token = line.substring(i, end + 3);
-                    state = HighlightState.NORMAL;
+                    nextState = HighlightState.NORMAL;
                 }
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
             // 2. Comments (#)
             else if (c == '#') {
                 token = line.substring(i);
                 tokenLength = token.length();
-                color = TextColor.ANSI.GREEN;
+                newColor = ANSI_GREEN;
             }
 
             // 3. New multi-line docstring openings
@@ -66,23 +74,23 @@ public class PythonHighlighter implements SyntaxHighlighter {
                 int end = line.indexOf("\"\"\"", i + 3);
                 if (end == -1) {
                     token = line.substring(i);
-                    state = HighlightState.PY_TRIPLE_DOUBLE;
+                    nextState = HighlightState.PY_TRIPLE_DOUBLE;
                 } else {
                     token = line.substring(i, end + 3);
                 }
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
             else if (line.startsWith("'''", i)) {
                 int end = line.indexOf("'''", i + 3);
                 if (end == -1) {
                     token = line.substring(i);
-                    state = HighlightState.PY_TRIPLE_SINGLE;
+                    nextState = HighlightState.PY_TRIPLE_SINGLE;
                 } else {
                     token = line.substring(i, end + 3);
                 }
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
             // 4. Decorators (@decorator_name)
@@ -93,7 +101,7 @@ public class PythonHighlighter implements SyntaxHighlighter {
                 }
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
             // 5. Standard single-line string literals
@@ -115,7 +123,7 @@ public class PythonHighlighter implements SyntaxHighlighter {
 
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
             // 6. Numbers (integers, floats, underscores)
@@ -126,14 +134,14 @@ public class PythonHighlighter implements SyntaxHighlighter {
                     if (Character.isDigit(next) || next == '_') {
                         end++;
                     } else if (next == '.' && end + 1 < line.length() && Character.isDigit(line.charAt(end + 1))) {
-                        end++; // Accept decimal dot only if followed by digits
+                        end++;
                     } else {
                         break;
                     }
                 }
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.MAGENTA;
+                newColor = ANSI_MAGENTA;
             }
 
             // 7. Identifiers, keywords, built-ins, and function calls
@@ -146,18 +154,18 @@ public class PythonHighlighter implements SyntaxHighlighter {
                 tokenLength = token.length();
 
                 if (KEYWORDS.contains(token)) {
-                    color = TextColor.ANSI.CYAN;
+                    newColor = ANSI_CYAN;
                 } else if (BUILTINS.contains(token)) {
-                    color = TextColor.ANSI.GREEN;
+                    newColor = ANSI_GREEN;
                 } else {
                     int peek = end;
                     while (peek < line.length() && Character.isWhitespace(line.charAt(peek))) {
                         peek++;
                     }
                     if (peek < line.length() && line.charAt(peek) == '(') {
-                        color = TextColor.ANSI.BLUE;
+                        newColor = ANSI_BLUE;
                     } else {
-                        color = TextColor.ANSI.DEFAULT;
+                        newColor = ANSI_RESET;
                     }
                 }
             }
@@ -166,29 +174,31 @@ public class PythonHighlighter implements SyntaxHighlighter {
             else if ("=+-*/%&|^!<>".indexOf(c) != -1) {
                 token = String.valueOf(c);
                 tokenLength = 1;
-                color = TextColor.ANSI.RED;
+                newColor = ANSI_RED;
             }
 
             // 9. Delimiters and whitespace
             else {
                 token = String.valueOf(c);
                 tokenLength = 1;
-                color = TextColor.ANSI.DEFAULT;
+                newColor = ANSI_RESET;
             }
 
-            // Clip rendering to maxWidth without truncating parser state
-            if (drawn < maxWidth) {
-                int remaining = maxWidth - drawn;
-                String printable = (token.length() > remaining) ? token.substring(0, remaining) : token;
-                tg.setForegroundColor(color);
-                tg.putString(x + drawn, y, printable);
-                drawn += printable.length();
+            // إضافة اللون
+            if (!newColor.equals(currentColor)) {
+                resultLine.append(newColor);
+                currentColor = newColor;
             }
+            resultLine.append(token);
 
             i += tokenLength;
         }
 
-        tg.setForegroundColor(TextColor.ANSI.DEFAULT);
-        return state;
+        // إغلاق أي لون مفتوح
+        if (!currentColor.equals(ANSI_RESET)) {
+            resultLine.append(ANSI_RESET);
+        }
+
+        return new HighlightResult(resultLine.toString(), nextState);
     }
 }

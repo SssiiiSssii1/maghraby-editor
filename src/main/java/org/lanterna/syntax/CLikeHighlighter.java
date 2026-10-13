@@ -1,17 +1,23 @@
 package org.lanterna.syntax;
 
-import com.googlecode.lanterna.TextColor;
-import com.googlecode.lanterna.graphics.TextGraphics;
-
 import java.util.Set;
 
 /**
- * Syntax highlighter for C-family languages (Java, C, C++, etc.).
+ * Syntax highlighter for C-family languages (Java, C, C++, etc.) using ANSI escape codes.
  */
 public class CLikeHighlighter implements SyntaxHighlighter {
 
     private final Set<String> supportedExtensions;
     private final Set<String> keywords;
+
+    // ثوابت ألوان ANSI كبديل لـ TextColor في Lanterna
+    private static final String ANSI_RESET = "\033[0m";
+    private static final String ANSI_GREEN = "\033[32m";
+    private static final String ANSI_YELLOW = "\033[33m";
+    private static final String ANSI_MAGENTA = "\033[35m";
+    private static final String ANSI_CYAN = "\033[36m";
+    private static final String ANSI_BLUE = "\033[34m";
+    private static final String ANSI_RED = "\033[31m";
 
     public CLikeHighlighter(Set<String> supportedExtensions, Set<String> keywords) {
         this.supportedExtensions = supportedExtensions;
@@ -24,15 +30,16 @@ public class CLikeHighlighter implements SyntaxHighlighter {
     }
 
     @Override
-    public HighlightState drawLine(TextGraphics tg, int x, int y, String line, int maxWidth, HighlightState state) {
+    public HighlightResult highlightLine(String line, HighlightState state) {
+        StringBuilder resultLine = new StringBuilder();
         int i = 0;
-        int drawn = 0;
         boolean inBlock = (state == HighlightState.C_BLOCK_COMMENT);
+        String currentColor = ANSI_RESET;
 
         while (i < line.length()) {
             char c = line.charAt(i);
             String token;
-            TextColor color;
+            String newColor;
             int tokenLength;
 
             // 1. Ongoing multi-line block comment continuation (/* ... */)
@@ -46,14 +53,14 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                     inBlock = false;
                 }
                 tokenLength = token.length();
-                color = TextColor.ANSI.GREEN;
+                newColor = ANSI_GREEN;
             }
 
             // 2. Single-line comment (//)
             else if (line.startsWith("//", i)) {
                 token = line.substring(i);
                 tokenLength = token.length();
-                color = TextColor.ANSI.GREEN;
+                newColor = ANSI_GREEN;
             }
 
             // 3. New multi-line block comment opening (/*)
@@ -66,10 +73,10 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                     token = line.substring(i, end + 2);
                 }
                 tokenLength = token.length();
-                color = TextColor.ANSI.GREEN;
+                newColor = ANSI_GREEN;
             }
 
-            // 4. Preprocessor directives for C/C++ (#include, #define, #pragma)
+            // 4. Preprocessor directives
             else if (c == '#' && (supportedExtensions.contains("c") || supportedExtensions.contains("cpp") || supportedExtensions.contains("h"))) {
                 int end = i + 1;
                 while (end < line.length() && Character.isLetterOrDigit(line.charAt(end))) {
@@ -77,10 +84,10 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                 }
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.MAGENTA;
+                newColor = ANSI_MAGENTA;
             }
 
-            // 5. Annotations (e.g., @Override, @Deprecated)
+            // 5. Annotations (@Override)
             else if (c == '@' && Character.isJavaIdentifierStart(peekChar(line, i + 1))) {
                 int end = i + 1;
                 while (end < line.length() && Character.isJavaIdentifierPart(line.charAt(end))) {
@@ -88,10 +95,10 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                 }
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
-            // 6. String and character literals with backslash escape handling
+            // 6. String and character literals
             else if (c == '"' || c == '\'') {
                 char quote = c;
                 int end = i + 1;
@@ -110,10 +117,10 @@ public class CLikeHighlighter implements SyntaxHighlighter {
 
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.YELLOW;
+                newColor = ANSI_YELLOW;
             }
 
-            // 7. Numeric literals (Hex, Decimal, Float; prevents swallowing chained method calls)
+            // 7. Numeric literals
             else if (Character.isDigit(c) || (c == '.' && Character.isDigit(peekChar(line, i + 1)))) {
                 int end = i + 1;
                 boolean isHex = (c == '0' && end < line.length() && (line.charAt(end) == 'x' || line.charAt(end) == 'X'));
@@ -124,8 +131,14 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                     if (isHex ? isHexDigit(next) : Character.isDigit(next)) {
                         end++;
                     } else if (next == '.' && Character.isDigit(peekChar(line, end + 1))) {
-                        end++; // Only accept '.' as part of the number if followed by digits
-                    } else if (next == 'f' || next == 'F' || next == 'l' || next == 'L' || next == 'd' || next == 'D' || next == '_') {
+                        end++;
+                    } else if (!isHex && (next == 'e' || next == 'E')
+                            && (Character.isDigit(peekChar(line, end + 1))
+                                || ((peekChar(line, end + 1) == '+' || peekChar(line, end + 1) == '-')
+                                    && Character.isDigit(peekChar(line, end + 2))))) {
+                        end += 2; // exponent such as 1e9 or 2.5e-3
+                    } else if (next == 'f' || next == 'F' || next == 'l' || next == 'L' || next == 'd' || next == 'D'
+                            || next == 'u' || next == 'U' || next == '_') {
                         end++;
                     } else {
                         break;
@@ -133,10 +146,10 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                 }
                 token = line.substring(i, end);
                 tokenLength = token.length();
-                color = TextColor.ANSI.MAGENTA;
+                newColor = ANSI_MAGENTA;
             }
 
-            // 8. Identifiers, keywords, PascalCase types, and method invocations
+            // 8. Identifiers and keywords
             else if (Character.isJavaIdentifierStart(c)) {
                 int end = i + 1;
                 while (end < line.length() && Character.isJavaIdentifierPart(line.charAt(end))) {
@@ -146,18 +159,18 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                 tokenLength = token.length();
 
                 if (keywords.contains(token)) {
-                    color = TextColor.ANSI.CYAN;
+                    newColor = ANSI_CYAN;
                 } else if (Character.isUpperCase(token.charAt(0))) {
-                    color = TextColor.ANSI.YELLOW; // Highlight standard class / struct names
+                    newColor = ANSI_YELLOW;
                 } else {
                     int peek = end;
                     while (peek < line.length() && Character.isWhitespace(line.charAt(peek))) {
                         peek++;
                     }
                     if (peek < line.length() && line.charAt(peek) == '(') {
-                        color = TextColor.ANSI.BLUE; // Highlight function / method call
+                        newColor = ANSI_BLUE;
                     } else {
-                        color = TextColor.ANSI.DEFAULT;
+                        newColor = ANSI_RESET;
                     }
                 }
             }
@@ -166,30 +179,33 @@ public class CLikeHighlighter implements SyntaxHighlighter {
             else if ("=+-*/%&|^!<>?:".indexOf(c) != -1) {
                 token = String.valueOf(c);
                 tokenLength = 1;
-                color = TextColor.ANSI.RED;
+                newColor = ANSI_RED;
             }
 
-            // 10. Delimiters, punctuation, and whitespace
+            // 10. Delimiters
             else {
                 token = String.valueOf(c);
                 tokenLength = 1;
-                color = TextColor.ANSI.DEFAULT;
+                newColor = ANSI_RESET;
             }
 
-            // Render only within terminal bounds; parsing continues to preserve line state
-            if (drawn < maxWidth) {
-                int remaining = maxWidth - drawn;
-                String printableToken = (token.length() > remaining) ? token.substring(0, remaining) : token;
-                tg.setForegroundColor(color);
-                tg.putString(x + drawn, y, printableToken);
-                drawn += printableToken.length();
+            // إضافة اللون فقط إذا تغير لتجنب تكرار رموز ANSI غير الضرورية (Optimization)
+            if (!newColor.equals(currentColor)) {
+                resultLine.append(newColor);
+                currentColor = newColor;
             }
+            resultLine.append(token);
 
             i += tokenLength;
         }
 
-        tg.setForegroundColor(TextColor.ANSI.DEFAULT);
-        return inBlock ? HighlightState.C_BLOCK_COMMENT : HighlightState.NORMAL;
+        // إغلاق أي لون مفتوح في نهاية السطر
+        if (!currentColor.equals(ANSI_RESET)) {
+            resultLine.append(ANSI_RESET);
+        }
+
+        HighlightState nextState = inBlock ? HighlightState.C_BLOCK_COMMENT : HighlightState.NORMAL;
+        return new HighlightResult(resultLine.toString(), nextState);
     }
 
     private char peekChar(String line, int index) {

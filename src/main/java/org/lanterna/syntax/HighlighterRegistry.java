@@ -8,7 +8,7 @@ import java.util.Set;
  * Registry storing all registered highlighters and resolving the correct
  * implementation based on a file's extension.
  */
-public class HighlighterRegistry {
+public final class HighlighterRegistry {
 
     private final List<SyntaxHighlighter> highlighters = new ArrayList<>();
     private final SyntaxHighlighter fallback = new PlainTextHighlighter();
@@ -30,7 +30,7 @@ public class HighlighterRegistry {
                         "public", "return", "short", "static", "strictfp", "super",
                         "switch", "synchronized", "this", "throw", "throws", "transient",
                         "try", "void", "volatile", "while", "var", "record", "yield",
-                        "sealed", "permits"
+                        "sealed", "permits", "true", "false", "null"
                 )
         ));
 
@@ -63,11 +63,19 @@ public class HighlighterRegistry {
      * Resolves the highlighter for the provided filename by inspecting its extension.
      */
     public SyntaxHighlighter forFileName(String fileName) {
-        if (fileName == null || !fileName.contains(".")) {
+        if (fileName == null) {
             return fallback;
         }
 
-        String extension = fileName.substring(fileName.lastIndexOf('.') + 1);
+        // Look only at the last path component, so "my.dir/Makefile" is not treated as having extension "dir/Makefile"
+        int slash = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
+        String baseName = fileName.substring(slash + 1);
+        int dot = baseName.lastIndexOf('.');
+        if (dot < 0) {
+            return fallback;
+        }
+
+        String extension = baseName.substring(dot + 1);
 
         for (SyntaxHighlighter highlighter : highlighters) {
             if (highlighter.supportsExtension(extension)) {
