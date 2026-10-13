@@ -1,30 +1,23 @@
-# Lanterna Console Text Editor
+# maghraby-editor 
 
-A lightweight, terminal-based text editor built in Java using **Lanterna (TUI)**. The project features modal editing inspired by Vim, extensible multi-language syntax highlighting, a custom Linked-List Stack for Undo/Redo operations, in-place buffer cursor navigation, and full file persistence.
+A lightweight, zero-dependency, modal terminal text editor built entirely from scratch in pure Java. Designed for speed and minimal memory footprint, featuring native ANSI terminal rendering, a multi-threaded engine, multi-language syntax highlighting, and an integrated code execution runner.
 
 ---
 
-## Features
+## Key Architectural Highlights
 
-- **Modal Editing Architecture:**
-  - `NORMAL MODE`: Fast navigation, single-key shortcuts, and editor state control.
-  - `INSERT MODE`: Direct typing and character-level editing with automatic line handling.
-  - `COMMAND MODE`: Extended command-line actions (`:w`, `:d`, `:f`, `:r`, `:load`, `:run`).
-- **Extensible Syntax Highlighting:**
-  - Pluggable Strategy Pattern supporting syntax coloring for **Java**, **C/C++**, and **Python**.
-  - Highlights keywords, function invocations, string literals, numbers, and multi-line comments.
-  - Modular `HighlighterRegistry` supporting easy addition of new languages.
-- **Integrated Code Execution:**
-  - Directly compile and run active buffers (`C++`, `C`, `Java`, `Python`, `Bash`) via `:run` / `:c` without exiting the editor.
-- **Custom Data Structures:**
-  - Handcrafted `Node` and `MyStack` data structures (LIFO via Singly Linked List) to manage Undo and Redo states without relying on built-in Java collections.
-- **In-place Cursor Movement:**
-  - Full arrow-key navigation with dynamic 2D screen coordinate translation to 1D buffer indices (Single Source of Truth).
-- **File Persistence & CLI Integration:**
-  - Load and save source files directly.
-  - Open files instantly via command-line arguments.
-- **Buffer Operations:**
-  - Substring search (`find`), string replacement (`replace`), and character/word deletion (`delete`).
+- **Zero External Dependencies:** Built with pure Java and direct POSIX terminal control via ANSI escape codes and `stty`. No third-party UI libraries.
+- **Multi-Threaded Architecture:**
+  - **Input Thread:** Non-blocking raw byte parsing and escape sequence decoding (CSI/SS3 sequences).
+  - **Render Thread:** Smooth, decoupled rendering loop (~60 FPS) with horizontal/vertical viewport clipping.
+  - **Resize Watcher Daemon:** Background terminal size detection with dynamic relayout.
+- **Memory-Efficient Delta Undo/Redo:**
+  - Uses an action-based delta model (`EditAction`) storing only individual character edits instead of heavy full-buffer snapshots.
+  - Bounded custom LIFO stack preventing memory leaks during long sessions.
+- **Safe Code Runner (`:run` / `:compile`):**
+  - Compiles and runs **Java**, **C**, **C++**, and **Python**.
+  - Uses isolated temporary build directories to keep user workspaces clean of `.class` or binary artifacts.
+  - Employs signal guard protection (`SigintGuard`) via Java reflection to prevent `Ctrl+C` from closing the editor while running user programs.
 
 ---
 
@@ -36,68 +29,68 @@ A lightweight, terminal-based text editor built in Java using **Lanterna (TUI)**
 | `i` | Enter **Insert Mode** |
 | `:` | Enter **Command Mode** |
 | `u` | **Undo** last change |
-| `Ctrl + R` | **Redo** reverted change |
-| `Arrow Keys` | Move cursor around text |
-| `q` | Quit editor |
+| `r` | **Redo** reverted change |
+| `F5` | Run / Compile current file |
+| `Ctrl + S` | Quick save |
+| `Ctrl + Q` | Force quit |
+| `Arrow Keys` / `Home` / `End` / `PgUp` / `PgDn` | Cursor navigation |
+| `q` | Safe quit (warns if unsaved) |
 
 ### 2. Insert Mode
 | Key | Action |
 | --- | --- |
-| `Type any text` | In-place character insertion |
-| `Backspace` | In-place character deletion (before cursor) |
-| `Delete` | In-place character deletion (at cursor) |
-| `Enter` | New line |
+| `Typing` | In-place character insertion |
+| `Tab` | 4-space tab indentation |
+| `Backspace` | In-place character deletion before cursor |
+| `Delete` | Forward character deletion |
+| `Enter` | New line insertion |
 | `Esc` | Return to **Normal Mode** |
 
 ### 3. Command Mode (`:`)
 | Command | Usage | Description |
 | --- | --- | --- |
-| `:w` | `:w` | Quick save to current file |
-| `:w <filename>` | `:w notes.txt` | Saves buffer to specified file |
-| `:load <filename>` | `:load main.cpp` | Loads text from file into buffer |
-| `:run` or `:c` | `:run` | Compiles and executes current source code |
-| `:d <count>` | `:d 5` | Deletes last *N* characters |
-| `:d <word>` | `:d test` | Deletes first occurrence of word |
-| `:f <word>` | `:f target` | Finds word index |
-| `:r <old> <new>` | `:r foo bar` | Replaces target word |
-| `:exit` or `:q` | `:q` | Exits the editor |
+| `:w [filename]` | `:w` or `:w app.java` | Save buffer to current or new file |
+| `:wq` / `:x` | `:wq` | Save and quit |
+| `:q` | `:q` | Quit (checks for unsaved changes) |
+| `:q!` | `:q!` | Force quit discarding changes |
+| `:run [args]` | `:run arg1 arg2` | Compile and run active file with terminal handover |
+| `:compile` / `:build` | `:compile` | Compile / syntax check without running |
+| `:help` / `:h` | `:help` | Show command assistance |
+
+---
+
+## Supported Compilers & Runtimes
+
+- **Java:** `javac` & `java` (automatic package declaration detection and source-root calculation)
+- **C:** `gcc`, `clang`, or `cc` (auto-links `-lm`)
+- **C++:** `g++`, `clang++`, or `c++`
+- **Python:** `python3`, `python`, or `py` (in-memory syntax validation)
 
 ---
 
 ## Requirements
 
-- Java JDK 17+ (or JDK 21 / 25)
-- Apache Maven
+- **OS:** Linux, macOS, WSL, or Git-Bash (requires a POSIX terminal supporting `stty` and ANSI escapes)
+- **Java:** JDK 17+
+- **Build Tool:** Apache Maven
 
 ---
 
 ## Build & Run
 
 Clone the repository:
-
 ```bash
-git clone [https://github.com/mohammed1elmaghraby/lanterna-editor.git](https://github.com/mohammed1elmaghraby/lanterna-editor.git)
-cd lanterna-editor
+git clone [https://github.com/mohammed1elmaghraby/maghraby-editor.git](https://github.com/mohammed1elmaghraby/maghraby-editor.git)
+cd maghraby-editor
 ```
-
-Package the executable Fat-JAR:
+Build the JAR:
 ```bash
 mvn clean package
 ```
 
-Run with a new empty buffer:
+Run directly:
 ```bash
-mvn exec:java -Dexec.mainClass="org.lanterna.Main"
-```
+java -jar target/maghraby-editor-2.0.0.jar [filename]
 
-Or open an existing / new file directly:
-```bash
-mvn exec:java -Dexec.mainClass="org.lanterna.Main" -Dexec.args="Main.java"
 ```
-
-Or execute the packaged shaded JAR directly:
-```bash
-java -jar target/lanterna-editor-1.0-SNAPSHOT.jar [filename]
-```
-
-Engineered with ❤️ by Mohammed Elmaghraby.
+### Engineered with ❤️ by Mohammed Elmaghraby.
