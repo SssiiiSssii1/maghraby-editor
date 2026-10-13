@@ -1,8 +1,28 @@
+# Maven & Build outputs
 target/
+dependency-reduced-pom.xml
+
+# IDE specific files
 .idea/
 *.iml
-a.out
-test.txt
-test.cpp
-dependency-reduced-pom.xml
-*.py
+.vscode/
+.settings/
+.classpath
+.project
+
+# Temporary & backup files (Vim, Gedit, Nano, etc.)
+*~
+.*~
+*.swp
+*.swo
+*.bak
+
+# Compiled binaries / test artifacts
+*.class
+*.o
+*.out
+*.exe
+
+# OS specific files
+.DS_Store
+Thumbs.db
