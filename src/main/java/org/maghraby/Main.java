@@ -18,13 +18,15 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Terminal text editor (vim-like modes) with syntax highlighting and :run / :compile.
- * Needs a real terminal that supports ANSI escapes and `stty` (Linux, macOS, WSL, Git-Bash...).
+ * Terminal text editor (vim-like modes) with syntax highlighting and :run / :compile capabilities.
+ * Requires a real terminal supporting ANSI escapes and `stty` (Linux, macOS, WSL, Git-Bash...).
  */
 public class Main {
+
     // ------------------------------------------------------------------
-    // State
+    // Shared State & Configurations
     // ------------------------------------------------------------------
+
     private static volatile boolean running = true;
     private static volatile boolean needsRedraw = true;
     private static final AtomicBoolean forceClear = new AtomicBoolean(true);
@@ -33,13 +35,13 @@ public class Main {
     private static final HighlighterRegistry highlighterRegistry = new HighlighterRegistry();
     private static volatile String currentFilename = "Untitled.txt";
 
-    // 2D cursor (character coordinates inside the buffer)
+    // 2D Cursor Coordinates (Character coordinates inside the buffer)
     private static volatile int cursorRow = 0;
     private static volatile int cursorCol = 0;
-    private static int goalCol = 0;          // remembered column for Up/Down (input thread only)
-    private static boolean keepGoal = false; // set by vertical moves (input thread only)
+    private static int goalCol = 0;          // Remembered column for Up/Down movement (Input thread only)
+    private static boolean keepGoal = false; // Flag set by vertical moves (Input thread only)
 
-    // Viewport (render thread only)
+    // Viewport Boundaries (Render thread only)
     private static int topLine = 0;
     private static int leftCol = 0;
 
@@ -57,7 +59,7 @@ public class Main {
 
     private static final int TAB_WIDTH = 4;
 
-    // Rendering is paused while an external program owns the terminal
+    // Concurrency lock: Rendering is paused while an external program owns the terminal
     private static final Object RENDER_LOCK = new Object();
     private static volatile boolean renderPaused = false;
 
@@ -66,7 +68,10 @@ public class Main {
 
     private static final PrintStream out = createOut();
 
-    // ANSI
+    // ------------------------------------------------------------------
+    // ANSI Escape Codes
+    // ------------------------------------------------------------------
+
     private static final String ESC = "\033";
     private static final String ANSI_HIDE_CURSOR = ESC + "[?25l";
     private static final String ANSI_SHOW_CURSOR = ESC + "[?25h";
@@ -90,13 +95,13 @@ public class Main {
     }
 
     // ------------------------------------------------------------------
-    // Entry point
+    // Entry Point
     // ------------------------------------------------------------------
+
     public static void main(String[] args) {
         originalStty = stty("-g");
         if (originalStty == null) {
-            System.err.println("Error: this editor needs a real terminal (could not configure the TTY with 'stty').");
-            System.err.println("Run it from a terminal on Linux / macOS / WSL / Git-Bash, not from an IDE run console.");
+            System.err.println("Error: This editor requires a real terminal capable of 'stty' configuration.");
             System.exit(1);
             return;
         }
@@ -135,23 +140,24 @@ public class Main {
     }
 
     // ------------------------------------------------------------------
-    // Input thread
+    // Input Thread & Processing
     // ------------------------------------------------------------------
+
     private static void inputLoop() throws IOException {
         InputStream in = System.in;
         boolean lastWasCR = false;
 
         while (running) {
-            int b = in.read();                   // blocking: no busy polling, and EOF ends the editor
+            int b = in.read(); // Blocking read: no busy polling, EOF ends the editor
             if (b == -1) break;
 
             boolean isCR = false;
             keepGoal = false;
             try {
-                if (b == 17) {                                   // Ctrl+Q: force quit
+                if (b == 17) {                                   // Ctrl+Q: Force quit
                     running = false;
                     break;
-                } else if (b == 19) {                            // Ctrl+S
+                } else if (b == 19) {                            // Ctrl+S: Save
                     saveCommand("");
                 } else if (b == 27) {
                     handleEscapeSequence(in);
@@ -161,7 +167,7 @@ public class Main {
                     isCR = true;
                     handleEnter();
                 } else if (b == 10) {
-                    if (!lastWasCR) handleEnter();               // swallow the LF of a pasted CR LF pair
+                    if (!lastWasCR) handleEnter();               // Swallow LF of pasted CR LF pair
                 } else if (b == 9) {
                     handleTab();
                 } else if (b >= 32 && b < 127) {
@@ -171,7 +177,7 @@ public class Main {
                     if (s != null) handleText(s);
                 }
             } catch (RuntimeException e) {
-                statusMessage = "Internal error: " + e;           // never lose the session over one bad key
+                statusMessage = "Internal error: " + e;          // Prevent crashing over one bad key
             }
             lastWasCR = isCR;
 
@@ -181,7 +187,7 @@ public class Main {
         }
     }
 
-    /** Reads one byte, waiting at most {@code ms}. Returns -1 on timeout. */
+    /** Reads one byte, waiting at most `ms` milliseconds. Returns -1 on timeout. */
     private static int readTimeout(InputStream in, int ms) throws IOException {
         long end = System.nanoTime() + ms * 1_000_000L;
         while (in.available() <= 0) {
@@ -206,17 +212,17 @@ public class Main {
             buf[k] = (byte) c;
         }
         String s = new String(buf, StandardCharsets.UTF_8);
-        return s.indexOf('�') >= 0 ? null : s;
+        return s.indexOf('\uFFFD') >= 0 ? null : s;
     }
 
-    /** Called right after an ESC byte: distinguishes a bare Esc key from arrow/Home/End/Delete/F-key sequences. */
+    /** Distinguishes a bare Esc key from arrow/Home/End/Delete/F-key sequences. */
     private static void handleEscapeSequence(InputStream in) throws IOException {
         int next = readTimeout(in, 30);
-        if (next == -1) {                       // plain Esc key
+        if (next == -1) { // Plain Esc key
             handleEscape();
             return;
         }
-        if (next == 'O') {                      // SS3: ESC O A ...  (application cursor keys, F1-F4)
+        if (next == 'O') { // SS3 keys (F1-F4)
             int c = readTimeout(in, 30);
             if (c == 'A') handleArrow(-1, 0);
             else if (c == 'B') handleArrow(1, 0);
@@ -226,12 +232,12 @@ public class Main {
             else if (c == 'F') handleEnd();
             return;
         }
-        if (next != '[') {                      // Alt+key etc.: treat as Esc
+        if (next != '[') { // Alt+key: treat as Esc
             handleEscape();
             return;
         }
 
-        // CSI: ESC [ <params> <final byte 0x40-0x7E>
+        // CSI sequences
         StringBuilder params = new StringBuilder();
         int fin = -1;
         for (int n = 0; n < 16; n++) {
@@ -244,7 +250,7 @@ public class Main {
 
         String p = params.toString();
         int semi = p.indexOf(';');
-        String base = semi >= 0 ? p.substring(0, semi) : p;   // ignore modifiers (Ctrl/Shift+arrow)
+        String base = semi >= 0 ? p.substring(0, semi) : p; // Ignore modifiers
 
         switch (fin) {
             case 'A': handleArrow(-1, 0); break;
@@ -261,16 +267,15 @@ public class Main {
                     case "5": handlePage(-1); break;
                     case "6": handlePage(1); break;
                     case "15": runCommand(true, ""); break;       // F5
-                    default: break;
                 }
                 break;
-            default: break;
         }
     }
 
     // ------------------------------------------------------------------
-    // Key handlers (run on the input thread)
+    // Key Handlers
     // ------------------------------------------------------------------
+
     private static void handleText(String s) {
         if (currentMode == Mode.INSERT) {
             int[] pos = editor.insertAt(cursorRow, cursorCol, s);
@@ -320,7 +325,7 @@ public class Main {
             if (commandInput.length() > 0) {
                 commandInput.deleteCharAt(commandInput.length() - 1);
             } else {
-                currentMode = Mode.NORMAL;          // backspace on an empty ':' line cancels it (like vim)
+                currentMode = Mode.NORMAL; // Backspace on empty line cancels command mode
                 statusMessage = "NORMAL MODE";
             }
         }
@@ -375,7 +380,7 @@ public class Main {
 
         if (rowDelta != 0) {
             cursorRow += rowDelta;
-            cursorCol = goalCol;                    // clampCursor() trims it to the new line's length
+            cursorCol = goalCol;
             keepGoal = true;
         }
     }
@@ -403,8 +408,9 @@ public class Main {
     }
 
     // ------------------------------------------------------------------
-    // Commands
+    // Editor Commands Execution
     // ------------------------------------------------------------------
+
     private static void tryQuit() {
         if (editor.isDirty()) {
             statusMessage = "Unsaved changes! :w to save, :wq to save+quit, :q! (or Ctrl+Q) to discard.";
@@ -432,33 +438,18 @@ public class Main {
         String arg = parts.length > 1 ? parts[1].trim() : "";
 
         switch (name) {
-            case "q": case "quit": case "exit":
-                tryQuit();
-                break;
-            case "q!": case "quit!":
-                running = false;
-                break;
-            case "w": case "write":
-                saveCommand(arg);
-                break;
-            case "wq": case "x":
-                if (saveCommand(arg)) running = false;
-                break;
-            case "run":
-                runCommand(true, arg);
-                break;
-            case "compile": case "build":
-                runCommand(false, arg);
-                break;
-            case "help": case "h":
-                statusMessage = HELP;
-                break;
-            default:
-                statusMessage = "Unknown command: " + cmdLine + "   (try :help)";
+            case "q": case "quit": case "exit": tryQuit(); break;
+            case "q!": case "quit!": running = false; break;
+            case "w": case "write": saveCommand(arg); break;
+            case "wq": case "x": if (saveCommand(arg)) running = false; break;
+            case "run": runCommand(true, arg); break;
+            case "compile": case "build": runCommand(false, arg); break;
+            case "help": case "h": statusMessage = HELP; break;
+            default: statusMessage = "Unknown command: " + cmdLine + "   (try :help)";
         }
     }
 
-    /** Saves, builds (and optionally runs) the current file with the terminal handed over to the program. */
+    /** Saves, builds, and optionally runs the file while handing over terminal access. */
     private static void runCommand(boolean run, String argLine) {
         String file = currentFilename;
         if (CodeRunner.detect(file) == null) {
@@ -497,14 +488,13 @@ public class Main {
     private static void waitForEnter() {
         try {
             int ch;
-            while ((ch = System.in.read()) != -1 && ch != '\n') { /* swallow */ }
+            while ((ch = System.in.read()) != -1 && ch != '\n') { /* Swallow keys until enter */ }
             if (ch == -1) running = false;
         } catch (IOException ignored) {
             running = false;
         }
     }
 
-    /** Minimal argument splitter: whitespace separated, double or single quotes group words. */
     private static List<String> splitArgs(String line) {
         List<String> args = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
@@ -528,13 +518,14 @@ public class Main {
     }
 
     // ------------------------------------------------------------------
-    // Render thread
+    // Render Thread
     // ------------------------------------------------------------------
+
     private static void renderLoop() {
         while (running) {
             try {
                 if (needsRedraw && !renderPaused) {
-                    needsRedraw = false;            // clear BEFORE reading state: a key pressed mid-render re-arms it
+                    needsRedraw = false; // Clear flag before reading state
                     String frame = buildFrame();
                     synchronized (RENDER_LOCK) {
                         if (!renderPaused) {
@@ -549,7 +540,7 @@ public class Main {
                 statusMessage = "Render error: " + t;
             }
             try {
-                Thread.sleep(16);
+                Thread.sleep(16); // ~60fps rendering pace
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -569,7 +560,7 @@ public class Main {
             return sb.toString();
         }
 
-        // ---- snapshot of shared state ----
+        // --- Snapshot of Shared State ---
         Mode mode = currentMode;
         String status = statusMessage;
         String command = commandInput.toString();
@@ -581,31 +572,30 @@ public class Main {
         int lineCount = editor.getLineCount();
         row = Math.max(0, Math.min(row, lineCount - 1));
 
-        // ---- viewport (vertical) ----
+        // --- Viewport Calculation (Vertical) ---
         if (row < topLine) topLine = row;
         else if (row >= topLine + textRows) topLine = row - textRows + 1;
         topLine = Math.max(0, Math.min(topLine, Math.max(0, lineCount - 1)));
 
-        // One locked copy of everything from line 0 to the last visible line
+        // Extract necessary lines from the Piece Table
         List<String> all = editor.getLines(0, topLine + textRows);
         String cursorLineText = row < all.size() ? all.get(row) : editor.getLine(row);
         col = Math.max(0, Math.min(col, cursorLineText.length()));
 
-        // ---- viewport (horizontal), measured in screen columns (tabs expanded) ----
+        // --- Viewport Calculation (Horizontal) ---
         int vcol = visualCol(cursorLineText, col);
         if (vcol < leftCol) leftCol = vcol;
         else if (vcol >= leftCol + cols) leftCol = vcol - cols + 1;
         leftCol = Math.max(0, leftCol);
 
-        // ---- header ----
+        // --- Render Header ---
         String header = " maghraby Editor | " + sanitize(filename) + (editor.isDirty() ? " [+]" : "")
                 + " | Mode: " + mode;
         sb.append(ESC).append("[1;1H").append(ANSI_BG_BLUE_FG_WHITE).append(padRight(header, cols)).append(ANSI_RESET);
 
-        // ---- text area ----
+        // --- Render Text Area ---
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(filename);
 
-        // Carry multi-line state (block comments, docstrings) from the top of the file down to the first visible line
         HighlightState state = HighlightState.NORMAL;
         for (int i = 0; i < topLine && i < all.size(); i++) {
             state = highlighter.highlightLine(all.get(i), state).nextState;
@@ -616,15 +606,15 @@ public class Main {
             sb.append(ESC).append('[').append(i + 2).append(";1H").append(ANSI_CLEAR_LINE);
             if (idx < all.size()) {
                 String display = expandTabsAndSanitize(all.get(idx));
-                HighlightResult hr = highlighter.highlightLine(display, state);   // highlight the WHOLE line...
+                HighlightResult hr = highlighter.highlightLine(display, state);
                 state = hr.nextState;
-                sb.append(sliceAnsi(hr.coloredLine, leftCol, cols));              // ...then cut the visible window
+                sb.append(sliceAnsi(hr.coloredLine, leftCol, cols));
             }
         }
 
-        // ---- status + command line ----
+        // --- Render Status & Command Line ---
         sb.append(ESC).append('[').append(rows - 1).append(";1H")
-          .append(ANSI_BG_WHITE_FG_BLACK).append(padRight(" " + sanitize(status), cols)).append(ANSI_RESET);
+                .append(ANSI_BG_WHITE_FG_BLACK).append(padRight(" " + sanitize(status), cols)).append(ANSI_RESET);
 
         sb.append(ESC).append('[').append(rows).append(";1H").append(ANSI_CLEAR_LINE);
         if (mode == Mode.COMMAND) {
@@ -636,20 +626,21 @@ public class Main {
             int screenRow = (row - topLine) + 2;
             int screenCol = (vcol - leftCol) + 1;
             sb.append(ESC).append('[').append(Math.max(2, Math.min(screenRow, rows - 2))).append(';')
-              .append(Math.max(1, Math.min(screenCol, cols))).append('H');
+                    .append(Math.max(1, Math.min(screenCol, cols))).append('H');
         }
         sb.append(ANSI_SHOW_CURSOR);
         return sb.toString();
     }
 
     // ------------------------------------------------------------------
-    // Text helpers
+    // Text Processing Utilities
     // ------------------------------------------------------------------
+
     private static boolean isControl(char c) {
         return c < 0x20 || (c >= 0x7F && c < 0xA0);
     }
 
-    /** Replaces control characters so file contents can never inject terminal escape sequences. */
+    /** Prevents file contents from injecting terminal escape sequences. */
     private static String sanitize(String s) {
         boolean clean = true;
         for (int i = 0; i < s.length(); i++) if (isControl(s.charAt(i))) { clean = false; break; }
@@ -662,7 +653,7 @@ public class Main {
         return sb.toString();
     }
 
-    /** Tabs become spaces up to the next tab stop; other control characters become a visible dot. */
+    /** Converts tabs to spaces up to the next tab stop. */
     private static String expandTabsAndSanitize(String line) {
         StringBuilder sb = new StringBuilder(line.length() + 8);
         int v = 0;
@@ -680,7 +671,7 @@ public class Main {
         return sb.toString();
     }
 
-    /** Screen column of character index {@code col} in {@code line} once tabs are expanded. */
+    /** Calculates screen column index after tabs are expanded. */
     private static int visualCol(String line, int col) {
         int v = 0;
         int end = Math.min(col, line.length());
@@ -690,10 +681,7 @@ public class Main {
         return v;
     }
 
-    /**
-     * Returns the part of an ANSI-coloured string that falls in screen columns [start, start+width).
-     * Escape sequences are kept (so colours stay correct after horizontal scrolling) but never counted as width.
-     */
+    /** Slices an ANSI-colored string to fit the viewport horizontally. */
     static String sliceAnsi(String s, int start, int width) {
         StringBuilder sb = new StringBuilder(s.length());
         int end = start + width;
@@ -712,7 +700,7 @@ public class Main {
             }
             if (col >= end) break;
             int cp = s.codePointAt(i);
-            int len = Character.charCount(cp);   // a surrogate pair counts as 2 columns (matches the cursor maths)
+            int len = Character.charCount(cp);
             if (col >= start && col + len <= end) sb.append(s, i, i + len);
             col += len;
             i += len;
@@ -731,9 +719,10 @@ public class Main {
     }
 
     // ------------------------------------------------------------------
-    // Terminal handling
+    // Terminal System Handling
     // ------------------------------------------------------------------
-    /** Runs `stty <args>` against the controlling terminal. Returns trimmed stdout, or null on failure. */
+
+    /** Executes standard `stty` commands to manipulate terminal properties. */
     private static String stty(String args) {
         try {
             Process p = new ProcessBuilder("sh", "-c", "stty " + args + " < /dev/tty")
@@ -768,7 +757,6 @@ public class Main {
         } catch (NumberFormatException ignored) { }
     }
 
-    /** Re-reads the terminal size regularly so resizing the window re-lays out the editor. */
     private static void resizeWatcher() {
         while (running) {
             try {
@@ -786,16 +774,17 @@ public class Main {
         out.flush();
     }
 
-    /** Gives the terminal back to the user's program: normal screen, normal tty modes, visible cursor. */
+    /** Surrenders terminal control to user programs executed via :run */
     private static void suspendTerminal() {
         synchronized (RENDER_LOCK) {
-            renderPaused = true;                // any frame in progress has finished once we hold the lock
+            renderPaused = true;
         }
         out.print(ANSI_RESET + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);
         out.flush();
         stty(originalStty);
     }
 
+    /** Regains terminal control after a user program exits. */
     private static void resumeTerminal() {
         stty("raw -echo");
         out.print(ANSI_ENTER_ALT_SCREEN + ANSI_CLEAR_SCREEN + ANSI_HIDE_CURSOR);
@@ -806,7 +795,6 @@ public class Main {
         renderPaused = false;
     }
 
-    /** Idempotent; also used as the shutdown hook so the shell is never left in raw mode. */
     private static void restoreTerminal() {
         if (!terminalRestored.compareAndSet(false, true)) return;
         out.print(ANSI_RESET + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);

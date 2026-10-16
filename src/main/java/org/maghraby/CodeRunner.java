@@ -19,14 +19,11 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * Builds and executes "compile" / "compile + run" plans for Java, C, C++ and Python.
+ * Builds and executes "compile" or "compile + run" plans for Java, C, C++, and Python.
  *
  * Planning is pure (no terminal access). Execution inherits the real terminal, so the
- * program can read stdin and print normally; the caller must have put the terminal back
- * into normal (cooked) mode first.
- *
- * Build artifacts go to a throw-away temp directory, so no .class files / binaries are
- * ever dropped next to the user's sources.
+ * program can read stdin and print normally. Build artifacts are stored in a temporary
+ * directory to keep the user's workspace clean.
  */
 public final class CodeRunner {
 
@@ -42,16 +39,16 @@ public final class CodeRunner {
         Language(String label) { this.label = label; }
     }
 
-    /** A user-facing problem (missing compiler, unsupported file...). The message is shown in the status bar. */
+    /** A user-facing problem (e.g., missing compiler). The message is shown in the status bar. */
     public static final class RunnerException extends Exception {
         private static final long serialVersionUID = 1L;
         public RunnerException(String message) { super(message); }
     }
 
     public static final class Step {
-        public final String title;          // "Compiling", "Running", ...
+        public final String title;          // E.g., "Compiling", "Running"
         public final List<String> command;
-        public final boolean isRun;         // true = the user's program, false = compiler / checker
+        public final boolean isRun;         // true = user program, false = compiler/checker
 
         Step(String title, List<String> command, boolean isRun) {
             this.title = title;
@@ -63,7 +60,7 @@ public final class CodeRunner {
     public static final class Plan {
         public final Language language;
         public final Path workDir;
-        public final Path buildDir;         // null when nothing needs building (plain Python run)
+        public final Path buildDir;         // null when nothing needs building (e.g., Python)
         public final List<Step> steps;
         public final boolean run;
 
@@ -77,8 +74,9 @@ public final class CodeRunner {
     }
 
     // ------------------------------------------------------------------
-    // Language detection
+    // Language Detection
     // ------------------------------------------------------------------
+
     public static Language detect(String filename) {
         if (filename == null) return null;
         String base = Paths.get(filename.trim()).getFileName() == null
@@ -99,9 +97,11 @@ public final class CodeRunner {
     }
 
     // ------------------------------------------------------------------
-    // Planning
+    // Planning Phase
     // ------------------------------------------------------------------
+
     /**
+     * Creates an execution plan based on the file type.
      * @param run  true = compile and run, false = compile / check only
      * @param args program arguments (only used when run == true)
      */
@@ -110,15 +110,18 @@ public final class CodeRunner {
         if (lang == null) {
             throw new RunnerException("Cannot compile/run '" + filename + "'. Supported: " + supportedExtensions());
         }
+
         Path file;
         try {
             file = Paths.get(filename.trim()).toAbsolutePath().normalize();
         } catch (RuntimeException e) {
             throw new RunnerException("Invalid file name: " + filename);
         }
+
         if (!Files.isRegularFile(file)) {
             throw new RunnerException("File not found: " + file);
         }
+
         Path dir = file.getParent();
         String fileName = file.getFileName().toString();
         String baseName = fileName.substring(0, fileName.lastIndexOf('.'));
@@ -133,14 +136,14 @@ public final class CodeRunner {
                     String javac = findTool("javac");
                     String java = run ? findTool("java") : null;
                     if (javac == null) {
-                        throw new RunnerException("'javac' not found. Install a JDK (not just a JRE) and put it on PATH / JAVA_HOME.");
+                        throw new RunnerException("'javac' not found. Ensure JDK is installed and on PATH.");
                     }
-                    if (run && java == null) throw new RunnerException("'java' not found on PATH / JAVA_HOME.");
+                    if (run && java == null) throw new RunnerException("'java' not found on PATH.");
 
                     String pkg = readJavaPackage(file);
                     String mainClass = pkg == null ? baseName : pkg + "." + baseName;
                     Path sourceRoot = javaSourceRoot(dir, pkg);
-                    build = Files.createTempDirectory("lanterna-build-");
+                    build = Files.createTempDirectory("maghraby-build-");
 
                     steps.add(new Step("Compiling", cmd(javac, "-encoding", "UTF-8",
                             "-sourcepath", sourceRoot.toString(), "-d", build.toString(), file.toString()), false));
@@ -165,7 +168,8 @@ public final class CodeRunner {
                     Path exe = build.resolve(exeName);
 
                     List<String> compile = cmd(compiler, "-Wall", "-o", exe.toString(), file.toString());
-                    if (lang == Language.C) compile.add("-lm");   // math functions (sqrt, pow...) just work
+                    if (lang == Language.C) compile.add("-lm"); // Support math functions
+
                     steps.add(new Step("Compiling", compile, false));
                     if (run) {
                         List<String> runCmd = cmd(exe.toString());
@@ -177,7 +181,7 @@ public final class CodeRunner {
                 case PYTHON: {
                     String python = findTool("python3", "python", "py");
                     if (python == null) {
-                        throw new RunnerException("Python not found (tried python3, python, py). Install it and put it on PATH.");
+                        throw new RunnerException("Python not found. Install it and put it on PATH.");
                     }
                     if (run) {
                         List<String> runCmd = cmd(python, file.toString());
@@ -192,6 +196,7 @@ public final class CodeRunner {
                     throw new RunnerException("Unsupported language.");
             }
             return new Plan(lang, dir, build, steps, run);
+
         } catch (IOException e) {
             deleteQuietly(build);
             throw new RunnerException("Could not create build directory: " + e.getMessage());
@@ -204,20 +209,21 @@ public final class CodeRunner {
     /** Syntax check without writing __pycache__ and with a compact one-line error. */
     private static final String PY_SYNTAX_CHECK =
             "import sys\n"
-          + "try:\n"
-          + "    compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')\n"
-          + "except SyntaxError as e:\n"
-          + "    sys.stderr.write('%s:%s:%s: SyntaxError: %s\\n' % (e.filename, e.lineno, e.offset, e.msg))\n"
-          + "    sys.exit(1)\n";
+                    + "try:\n"
+                    + "    compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')\n"
+                    + "except SyntaxError as e:\n"
+                    + "    sys.stderr.write('%s:%s:%s: SyntaxError: %s\\n' % (e.filename, e.lineno, e.offset, e.msg))\n"
+                    + "    sys.exit(1)\n";
 
     // ------------------------------------------------------------------
-    // Execution
+    // Execution Phase
     // ------------------------------------------------------------------
+
     /**
      * Runs the plan on the real terminal. Returns a one-line summary for the status bar.
      * Never throws for ordinary failures (compile errors, non-zero exit...).
      */
-    @SuppressWarnings("try") // the guard is only used for its close(): it restores the previous SIGINT handler
+    @SuppressWarnings("try") // Guard is only used for its close(): it restores the previous SIGINT handler
     public static String execute(Plan plan, PrintStream out) {
         String summary = "Done.";
         try (SigintGuard ignored = SigintGuard.install()) {
@@ -261,7 +267,7 @@ public final class CodeRunner {
             try {
                 return p.waitFor();
             } catch (InterruptedException e) {
-                // keep waiting: the child owns the terminal right now
+                // Keep waiting: the child process owns the terminal right now
             }
         }
     }
@@ -271,8 +277,9 @@ public final class CodeRunner {
     }
 
     // ------------------------------------------------------------------
-    // Helpers
+    // Helpers & Utilities
     // ------------------------------------------------------------------
+
     private static List<String> cmd(String... parts) {
         List<String> list = new ArrayList<>();
         Collections.addAll(list, parts);
@@ -285,7 +292,6 @@ public final class CodeRunner {
     private static String readJavaPackage(Path file) {
         try {
             String text = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
-            // ignore anything after the first class-ish keyword is unnecessary: package must come first
             Matcher m = PACKAGE_DECL.matcher(text);
             return m.find() ? m.group(1) : null;
         } catch (IOException e) {
@@ -293,7 +299,7 @@ public final class CodeRunner {
         }
     }
 
-    /** src/org/foo/Bar.java with "package org.foo" -> src. Falls back to the file's directory. */
+    /** Resolves the source root directory based on the Java package declaration. */
     private static Path javaSourceRoot(Path dir, String pkg) {
         if (pkg == null) return dir;
         String[] segments = pkg.split("\\.");
@@ -308,7 +314,7 @@ public final class CodeRunner {
         return root == null ? dir : root;
     }
 
-    /** First tool found on PATH (or, for java/javac, next to the running JVM). Returns an absolute path or null. */
+    /** Finds the first available tool on the system PATH. */
     static String findTool(String... names) {
         List<File> dirs = new ArrayList<>();
         String path = System.getenv("PATH");
@@ -336,7 +342,6 @@ public final class CodeRunner {
         StringBuilder sb = new StringBuilder();
         for (String part : command) {
             if (sb.length() > 0) sb.append(' ');
-            // Show multi-line / long inline scripts (python -c) in short form
             if (part.indexOf('\n') >= 0) part = "<inline script>";
             boolean quote = part.isEmpty() || part.matches(".*[\\s\"'$&|;<>()*?].*");
             sb.append(quote ? "'" + part.replace("'", "'\\''") + "'" : part);
@@ -354,11 +359,8 @@ public final class CodeRunner {
     }
 
     /**
-     * While the user's program owns the terminal (cooked mode), Ctrl+C is delivered as SIGINT to the whole
-     * foreground process group, which includes this JVM. Without protection Ctrl+C would kill the editor
-     * instead of just the program. We install a no-op handler (not SIG_IGN, because "ignored" would be
-     * inherited by the child). Done via reflection so it compiles everywhere; if it is unavailable we just
-     * carry on without the protection.
+     * Prevents Ctrl+C (SIGINT) from killing the editor when the user program is running.
+     * Replaces the handler temporarily and restores it upon closing.
      */
     private static final class SigintGuard implements AutoCloseable {
         private Object signal;
