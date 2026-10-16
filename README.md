@@ -1,19 +1,20 @@
-# maghraby-editor 
+# maghraby-editor
 
-A lightweight, zero-dependency, modal terminal text editor built entirely from scratch in pure Java. Designed for speed and minimal memory footprint, featuring native ANSI terminal rendering, a multi-threaded engine, multi-language syntax highlighting, and an integrated code execution runner.
+A lightweight, zero-dependency, modal terminal text editor built entirely from scratch in pure Java. Designed for speed and minimal memory footprint, featuring native ANSI terminal rendering, a multi-threaded engine, multi-language syntax highlighting, an integrated code execution runner, and a highly optimized **Piece Table** core architecture.
 
 ---
 
 ## Key Architectural Highlights
 
+- **Piece Table Data Structure (v2.0 Engine):** The core buffer engine utilizes a Piece Table architecture (`originalBuffer`, `addBuffer`, and `pieces`). This guarantees near **O(1) time complexity** for text insertions and deletions, making the editor blazing fast and highly memory-efficient even when handling massive files.
 - **Zero External Dependencies:** Built with pure Java and direct POSIX terminal control via ANSI escape codes and `stty`. No third-party UI libraries.
 - **Multi-Threaded Architecture:**
   - **Input Thread:** Non-blocking raw byte parsing and escape sequence decoding (CSI/SS3 sequences).
   - **Render Thread:** Smooth, decoupled rendering loop (~60 FPS) with horizontal/vertical viewport clipping.
   - **Resize Watcher Daemon:** Background terminal size detection with dynamic relayout.
 - **Memory-Efficient Delta Undo/Redo:**
-  - Uses an action-based delta model (`EditAction`) storing only individual character edits instead of heavy full-buffer snapshots.
-  - Bounded custom LIFO stack preventing memory leaks during long sessions.
+  - Uses an action-based delta model (`EditAction`) storing only individual microscopic edits instead of heavy full-buffer snapshots.
+  - Bounded custom LIFO stack (up to 1500 actions) preventing memory leaks during long coding sessions.
 - **Safe Code Runner (`:run` / `:compile`):**
   - Compiles and runs **Java**, **C**, **C++**, and **Python**.
   - Uses isolated temporary build directories to keep user workspaces clean of `.class` or binary artifacts.
@@ -84,13 +85,13 @@ git clone https://github.com/mohammed1elmaghraby/maghraby-editor.git
 cd maghraby-editor
 ```
 Build the JAR:
+
 ```bash
 mvn clean package
 ```
-
 Run directly:
+
 ```bash
 java -jar target/maghraby-editor-2.0.0.jar [filename]
-
 ```
-### Engineered with ❤️ by Mohammed Elmaghraby.
+Engineered with ❤️ by Mohammed Elmaghraby.
