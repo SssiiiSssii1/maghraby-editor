@@ -78,6 +78,7 @@ A lightweight, zero-dependency, modal terminal text editor built entirely from s
 ---
 
 ## Build & Run
+> **Note:** If you prefer not to build the project manually, you can grab the latest pre-compiled JAR from the [Releases](https://github.com/mohammed1elmaghraby/maghraby-editor/releases) page.
 
 Clone the repository:
 ```bash
