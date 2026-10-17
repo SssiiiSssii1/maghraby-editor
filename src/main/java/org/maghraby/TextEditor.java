@@ -11,12 +11,22 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * Text buffer + undo/redo history utilizing a Piece Table data structure.
- * The Piece Table guarantees O(1) insertions and deletions by keeping the original
- * file content read-only and appending new keystrokes to an addBuffer.
+ * Text buffer + undo/redo history built on a Piece Table.
+ *
+ * The original file is kept read-only and every keystroke is appended to an add-buffer; the
+ * document is just an ordered list of {@link Piece}s pointing into those two buffers.
+ *
+ * On top of that sits a <b>line index</b> ({@code lineStarts}): the document offset at which each
+ * line begins. It is updated incrementally by every insert/delete, so row/column lookups,
+ * line counts and line reads never rebuild or split the whole document.
+ *
+ * Costs per edit: finding the piece is O(pieces) (kept small by coalescing); updating the line
+ * index is a binary search plus an array shift (O(lines) memmove, no allocation per line).
+ * Neither depends on the file's size in characters the way "join everything, then split" did.
  */
 public class TextEditor {
     private final MyStack undoStack;
@@ -28,6 +38,15 @@ public class TextEditor {
     StringBuilder addBuffer;    // Append-only buffer for new user inputs
     List<Piece> pieces;         // The sequence of pieces linking buffers together
 
+    // --- Document metrics kept in sync by insertText / deleteText ---
+    private int docLength;                 // total characters in the document
+    private int[] lineStarts = new int[16]; // lineStarts[i] = offset where line i begins (sorted)
+    private int lineCount = 1;             // number of valid entries in lineStarts (always >= 1)
+
+    // Lowest line touched by any edit since the last takeDirtyFromLine(); lets the renderer keep
+    // per-line caches (e.g. syntax-highlighter state) valid for everything above the edit.
+    private int dirtyFromLine = Integer.MAX_VALUE;
+
     public TextEditor() {
         this.undoStack = new MyStack();
         this.redoStack = new MyStack();
@@ -38,45 +57,162 @@ public class TextEditor {
     // Piece Table Logic & Helpers
     // ------------------------------------------------------------------
 
-    public void loadInitialContent(String fileContent) {
+    public synchronized void loadInitialContent(String fileContent) {
         this.originalBuffer = fileContent != null ? fileContent : "";
         this.addBuffer = new StringBuilder();
         this.pieces = new ArrayList<>();
 
-        Piece initialPiece = new Piece();
-        initialPiece.source = BufferType.ORIGINAL;
-        initialPiece.start = 0;
-        initialPiece.length = this.originalBuffer.length();
-
-        this.pieces.add(initialPiece);
+        if (!originalBuffer.isEmpty()) {
+            pieces.add(newPiece(BufferType.ORIGINAL, 0, originalBuffer.length()));
+        }
+        this.docLength = originalBuffer.length();
+        rebuildLineIndex();
+        dirtyFromLine = 0; // everything changed
     }
 
-    public String getFullText() {
-        if (pieces == null || pieces.isEmpty()) return "";
-        StringBuilder fullText = new StringBuilder();
+    /**
+     * Returns the lowest line number modified since the previous call (Integer.MAX_VALUE if nothing
+     * changed) and resets the marker. Line numbers below the result are guaranteed untouched, and the
+     * text of the returned line itself may have changed only from the edit point onwards, so anything
+     * derived from lines [0, result) -- such as the highlighter state at the start of line `result` --
+     * is still valid. Intended for a single consumer (the render thread).
+     */
+    public synchronized int takeDirtyFromLine() {
+        int v = dirtyFromLine;
+        dirtyFromLine = Integer.MAX_VALUE;
+        return v;
+    }
 
+    private static Piece newPiece(BufferType source, int start, int length) {
+        Piece p = new Piece();
+        p.source = source;
+        p.start = start;
+        p.length = length;
+        return p;
+    }
+
+    public synchronized String getFullText() {
+        StringBuilder sb = new StringBuilder(docLength);
+        appendRange(sb, 0, docLength);
+        return sb.toString();
+    }
+
+    /** Appends document characters [from, to) to sb by walking only the pieces that overlap it. */
+    private void appendRange(StringBuilder sb, int from, int to) {
+        if (from >= to) return;
+        int pos = 0;
         for (Piece p : pieces) {
-            if (p.source == BufferType.ORIGINAL) {
-                fullText.append(originalBuffer, p.start, p.start + p.length);
-            } else {
-                fullText.append(addBuffer.substring(p.start, p.start + p.length));
+            int pEnd = pos + p.length;
+            if (pEnd > from && pos < to) {
+                int s = p.start + Math.max(from, pos) - pos;
+                int e = p.start + Math.min(to, pEnd) - pos;
+                if (p.source == BufferType.ORIGINAL) sb.append(originalBuffer, s, e);
+                else sb.append(addBuffer, s, e);
             }
+            pos = pEnd;
+            if (pos >= to) break;
         }
-        return fullText.toString();
+    }
+
+    private String substring(int from, int to) {
+        from = Math.max(0, from);
+        to = Math.min(to, docLength);
+        if (from >= to) return "";
+        StringBuilder sb = new StringBuilder(to - from);
+        appendRange(sb, from, to);
+        return sb.toString();
+    }
+
+    private char charAt(int offset) {
+        int pos = 0;
+        for (Piece p : pieces) {
+            if (offset < pos + p.length) {
+                int i = p.start + offset - pos;
+                return p.source == BufferType.ORIGINAL ? originalBuffer.charAt(i) : addBuffer.charAt(i);
+            }
+            pos += p.length;
+        }
+        throw new IndexOutOfBoundsException("offset " + offset + " >= length " + docLength);
+    }
+
+    // ------------------------------------------------------------------
+    // Line Index
+    // ------------------------------------------------------------------
+
+    /** Rebuilds lineStarts from scratch by scanning the original buffer once (used on load only). */
+    private void rebuildLineIndex() {
+        int newlines = 0;
+        for (int i = 0; i < originalBuffer.length(); i++) {
+            if (originalBuffer.charAt(i) == '\n') newlines++;
+        }
+        lineStarts = new int[Math.max(16, newlines + 1 + (newlines >> 2))];
+        lineCount = 1;
+        lineStarts[0] = 0;
+        for (int i = 0; i < originalBuffer.length(); i++) {
+            if (originalBuffer.charAt(i) == '\n') lineStarts[lineCount++] = i + 1;
+        }
+    }
+
+    /** Number of line starts that are <= value (i.e. the index of the first start greater than it). */
+    private int upperBound(int value) {
+        int lo = 0, hi = lineCount;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (lineStarts[mid] <= value) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    private void ensureLineCapacity(int needed) {
+        if (needed > lineStarts.length) {
+            lineStarts = Arrays.copyOf(lineStarts, Math.max(needed, lineStarts.length * 2));
+        }
+    }
+
+    /** Text of {@code text} was just inserted at {@code offset}: shift later lines and add new ones. */
+    private void indexInsert(int offset, String text) {
+        int n = text.length();
+        int newlines = 0;
+        for (int i = 0; i < n; i++) if (text.charAt(i) == '\n') newlines++;
+
+        int idx = upperBound(offset); // first line start strictly after the insertion point
+        ensureLineCapacity(lineCount + newlines);
+        System.arraycopy(lineStarts, idx, lineStarts, idx + newlines, lineCount - idx);
+        for (int k = idx + newlines; k < lineCount + newlines; k++) lineStarts[k] += n;
+
+        int w = idx;
+        for (int j = 0; j < n; j++) {
+            if (text.charAt(j) == '\n') lineStarts[w++] = offset + j + 1;
+        }
+        lineCount += newlines;
+    }
+
+    /** Characters [offset, offset + len) were just removed: drop their line starts, shift the rest. */
+    private void indexDelete(int offset, int len) {
+        int lo = upperBound(offset);       // first start > offset
+        int hi = upperBound(offset + len); // first start > end  (starts in (offset, end] were deleted)
+        int removed = hi - lo;
+        for (int k = hi; k < lineCount; k++) lineStarts[k - removed] = lineStarts[k] - len;
+        lineCount -= removed;
+    }
+
+    private int clampRow(int row) {
+        return Math.max(0, Math.min(row, lineCount - 1));
+    }
+
+    /** Offset just past the last character of the line (excluding its '\n'). */
+    private int lineEnd(int row) {
+        return row + 1 < lineCount ? lineStarts[row + 1] - 1 : docLength;
+    }
+
+    private int lineLength(int row) {
+        return lineEnd(row) - lineStarts[row];
     }
 
     private int getOffset(int row, int col) {
-        String[] allLines = getAllLines();
-        if (allLines.length == 0) return 0;
-
-        row = Math.max(0, Math.min(row, allLines.length - 1));
-        int offset = 0;
-
-        for (int i = 0; i < row; i++) {
-            offset += allLines[i].length() + 1; // +1 to account for the '\n'
-        }
-
-        return offset + Math.max(0, Math.min(col, allLines[row].length()));
+        row = clampRow(row);
+        return lineStarts[row] + Math.max(0, Math.min(col, lineLength(row)));
     }
 
     private int[] calculateNewPosition(int row, int col, String text) {
@@ -95,40 +231,55 @@ public class TextEditor {
         }
     }
 
+    /** Test hook: throws if the incremental line index disagrees with the actual text. */
+    synchronized void verifyIndex() {
+        String text = getFullText();
+        if (text.length() != docLength) {
+            throw new IllegalStateException("docLength " + docLength + " != text length " + text.length());
+        }
+        int expectedLines = 1;
+        for (int i = 0; i < text.length(); i++) if (text.charAt(i) == '\n') expectedLines++;
+        if (expectedLines != lineCount) {
+            throw new IllegalStateException("lineCount " + lineCount + " != expected " + expectedLines);
+        }
+        int row = 1;
+        if (lineStarts[0] != 0) throw new IllegalStateException("lineStarts[0] != 0");
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                if (lineStarts[row] != i + 1) {
+                    throw new IllegalStateException("lineStarts[" + row + "]=" + lineStarts[row] + " expected " + (i + 1));
+                }
+                row++;
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Read Access
     // ------------------------------------------------------------------
 
-    private String[] getAllLines() {
-        String text = getFullText();
-        return text.isEmpty() ? new String[]{""} : text.split("\n", -1);
-    }
-
     public synchronized int getLineCount() {
-        return getAllLines().length;
+        return lineCount;
     }
 
     public synchronized String getLine(int index) {
-        String[] allLines = getAllLines();
-        if (index < 0 || index >= allLines.length) return "";
-        return allLines[index];
+        if (index < 0 || index >= lineCount) return "";
+        return substring(lineStarts[index], lineEnd(index));
     }
 
     public synchronized int getLineLength(int index) {
-        String[] allLines = getAllLines();
-        if (index < 0 || index >= allLines.length) return 0;
-        return allLines[index].length();
+        if (index < 0 || index >= lineCount) return 0;
+        return lineLength(index);
     }
 
+    /** Lines [from, to), clamped to the document. One pass over the pieces, then one split. */
     public synchronized List<String> getLines(int from, int to) {
-        String[] allLines = getAllLines();
         from = Math.max(0, from);
-        to = Math.min(to, allLines.length);
-        List<String> result = new ArrayList<>(Math.max(0, to - from));
-        for (int i = from; i < to; i++) {
-            result.add(allLines[i]);
-        }
-        return result;
+        to = Math.min(to, lineCount);
+        if (from >= to) return new ArrayList<>();
+        String block = substring(lineStarts[from], lineEnd(to - 1));
+        // Exactly (to - from - 1) newlines in block, so split(-1) yields exactly (to - from) lines.
+        return new ArrayList<>(Arrays.asList(block.split("\n", -1)));
     }
 
     public synchronized boolean isDirty() {
@@ -139,74 +290,119 @@ public class TextEditor {
     // Core Modifiers
     // ------------------------------------------------------------------
 
-    public void insertText(int offset, String newText) {
+    public synchronized void insertText(int offset, String newText) {
         if (newText == null || newText.isEmpty()) return;
+        offset = Math.max(0, Math.min(offset, docLength));
 
+        int n = newText.length();
         int addStart = addBuffer.length();
         addBuffer.append(newText);
 
-        Piece newPiece = new Piece();
-        newPiece.source = BufferType.ADD;
-        newPiece.start = addStart;
-        newPiece.length = newText.length();
-
-        int currentOffset = 0;
+        boolean done = false;
+        int pos = 0;
         for (int i = 0; i < pieces.size(); i++) {
-            Piece current = pieces.get(i);
+            Piece p = pieces.get(i);
 
-            if (offset >= currentOffset && offset <= currentOffset + current.length) {
-                int splitPoint = offset - currentOffset;
+            if (offset <= pos + p.length) {
+                int split = offset - pos;
 
-                Piece left = new Piece();
-                left.source = current.source;
-                left.start = current.start;
-                left.length = splitPoint;
-
-                Piece right = new Piece();
-                right.source = current.source;
-                right.start = current.start + splitPoint;
-                right.length = current.length - splitPoint;
-
-                pieces.remove(i);
-
-                if (right.length > 0) pieces.add(i, right);
-                pieces.add(i, newPiece);
-                if (left.length > 0) pieces.add(i, left);
-
+                if (split == p.length) {
+                    // Inserting right after this piece.
+                    if (p.source == BufferType.ADD && p.start + p.length == addStart) {
+                        // Coalesce: this piece already ends exactly where the new text begins in the
+                        // add-buffer, so typing continues the same piece instead of creating a new one.
+                        p.length += n;
+                    } else {
+                        pieces.add(i + 1, newPiece(BufferType.ADD, addStart, n));
+                    }
+                } else if (split == 0) {
+                    pieces.add(i, newPiece(BufferType.ADD, addStart, n));
+                } else {
+                    // Inserting inside a piece: shrink it to the left half and add [new][right half].
+                    Piece right = newPiece(p.source, p.start + split, p.length - split);
+                    p.length = split;
+                    pieces.add(i + 1, newPiece(BufferType.ADD, addStart, n));
+                    pieces.add(i + 2, right);
+                }
+                done = true;
                 break;
             }
-            currentOffset += current.length;
+            pos += p.length;
         }
+
+        // Empty piece list (everything was deleted): the new text becomes the only piece.
+        if (!done) pieces.add(newPiece(BufferType.ADD, addStart, n));
+
+        dirtyFromLine = Math.min(dirtyFromLine, upperBound(offset) - 1); // line containing the edit point
+        docLength += n;
+        indexInsert(offset, newText);
     }
 
-    public void deleteText(int offset, int deleteLength) {
-        if (offset < 0 || pieces == null) return;
+    /**
+     * Removes [offset, offset + deleteLength) from the document. The range may span any number of
+     * pieces: every overlapped piece is trimmed, split or dropped until the range is consumed.
+     */
+    public synchronized void deleteText(int offset, int deleteLength) {
+        if (offset < 0 || deleteLength <= 0 || pieces == null) return;
+        int end = (int) Math.min((long) offset + deleteLength, docLength);
+        if (offset >= end) return;
+        int totalRemoved = end - offset;
 
-        int currentOffset = 0;
-        for (int i = 0; i < pieces.size(); i++) {
-            Piece current = pieces.get(i);
+        int pos = 0;
+        int i = 0;
+        while (i < pieces.size() && pos < end) {
+            Piece p = pieces.get(i);
+            int plen = p.length;
+            int pEnd = pos + plen;
 
-            if (offset >= currentOffset && offset < currentOffset + current.length) {
-                int splitPoint = offset - currentOffset;
-
-                Piece left = new Piece();
-                left.source = current.source;
-                left.start = current.start;
-                left.length = splitPoint;
-
-                Piece right = new Piece();
-                right.source = current.source;
-                right.start = current.start + splitPoint + deleteLength;
-                right.length = current.length - splitPoint - deleteLength;
-
-                pieces.remove(i);
-
-                if (right.length > 0) pieces.add(i, right);
-                if (left.length > 0) pieces.add(i, left);
-
-                break;
+            if (pEnd <= offset) { // entirely before the range
+                pos = pEnd;
+                i++;
+                continue;
             }
-            currentOffset += current.length;
+
+            int leftLen = Math.max(0, offset - pos);   // part of this piece kept on the left
+            int cutEnd = Math.min(plen, end - pos);    // where the kept right part starts
+            int rightLen = plen - cutEnd;              // part of this piece kept on the right
+
+            if (leftLen > 0 && rightLen > 0) {
+                // The range is strictly inside this piece: split it in two.
+                Piece right = newPiece(p.source, p.start + cutEnd, rightLen);
+                p.length = leftLen;
+                pieces.add(i + 1, right);
+                i += 2;
+            } else if (leftLen > 0) {
+                // Tail of the piece removed.
+                releaseAddTail(p, plen - leftLen);
+                p.length = leftLen;
+                i++;
+            } else if (rightLen > 0) {
+                // Head of the piece removed.
+                p.start += cutEnd;
+                p.length = rightLen;
+                i++;
+            } else {
+                // Whole piece removed.
+                releaseAddTail(p, plen);
+                pieces.remove(i);
+            }
+            pos = pEnd;
+        }
+
+        dirtyFromLine = Math.min(dirtyFromLine, upperBound(offset) - 1); // line containing the first removed char
+        docLength -= totalRemoved;
+        indexDelete(offset, totalRemoved);
+    }
+
+    /**
+     * If the last {@code count} characters of this ADD piece are also the last characters of the
+     * add-buffer, give them back. Nothing else references that region (pieces never overlap), and
+     * undo/redo store text, not buffer positions, so this is safe. It keeps type/backspace cycles
+     * from growing the buffer and lets the next keystroke coalesce into the same piece.
+     */
+    private void releaseAddTail(Piece p, int count) {
+        if (p.source == BufferType.ADD && p.start + p.length == addBuffer.length()) {
+            addBuffer.setLength(addBuffer.length() - count);
         }
     }
 
@@ -217,40 +413,37 @@ public class TextEditor {
     public synchronized int[] insertAt(int row, int col, String text) {
         if (text == null || text.isEmpty()) return new int[]{row, col};
 
-        String[] allLines = getAllLines();
-        row = Math.max(0, Math.min(row, allLines.length - 1));
-        col = Math.max(0, Math.min(col, allLines[row].length()));
+        row = clampRow(row);
+        col = Math.max(0, Math.min(col, lineLength(row)));
 
         undoStack.push(new EditAction(EditAction.Type.INSERT, row, col, text));
         redoStack.clear();
         dirty = true;
 
-        int offset = getOffset(row, col);
-        insertText(offset, text);
+        insertText(lineStarts[row] + col, text);
 
         return calculateNewPosition(row, col, text);
     }
 
     public synchronized int[] deleteAt(int row, int col) {
-        String[] allLines = getAllLines();
-        if (row < 0 || row >= allLines.length) return new int[]{row, col};
-        String line = allLines[row];
-        col = Math.max(0, Math.min(col, line.length()));
+        if (row < 0 || row >= lineCount) return new int[]{row, col};
+        int base = lineStarts[row];
+        int len = lineLength(row);
+        col = Math.max(0, Math.min(col, len));
 
         if (col > 0) {
             int start = col - 1;
-            if (start > 0 && Character.isLowSurrogate(line.charAt(start))
-                    && Character.isHighSurrogate(line.charAt(start - 1))) {
+            if (start > 0 && Character.isLowSurrogate(charAt(base + start))
+                    && Character.isHighSurrogate(charAt(base + start - 1))) {
                 start--;
             }
-            String removed = line.substring(start, col);
+            String removed = substring(base + start, base + col);
 
             undoStack.push(new EditAction(EditAction.Type.DELETE, row, start, removed));
             redoStack.clear();
             dirty = true;
 
-            int offset = getOffset(row, start);
-            deleteText(offset, removed.length());
+            deleteText(base + start, removed.length());
 
             return new int[]{row, start};
         }
@@ -258,33 +451,32 @@ public class TextEditor {
         if (row == 0) return new int[]{0, 0};
 
         int prevRow = row - 1;
-        int prevCol = allLines[prevRow].length();
+        int prevCol = lineLength(prevRow);
 
         undoStack.push(new EditAction(EditAction.Type.DELETE, prevRow, prevCol, "\n"));
         redoStack.clear();
         dirty = true;
 
-        int offset = getOffset(prevRow, prevCol);
-        deleteText(offset, 1);
+        deleteText(base - 1, 1); // the '\n' that ends the previous line
 
         return new int[]{prevRow, prevCol};
     }
 
     public synchronized int[] deleteForward(int row, int col) {
-        String[] allLines = getAllLines();
-        if (row < 0 || row >= allLines.length) return new int[]{row, col};
-        String line = allLines[row];
-        col = Math.max(0, Math.min(col, line.length()));
+        if (row < 0 || row >= lineCount) return new int[]{row, col};
+        int base = lineStarts[row];
+        int len = lineLength(row);
+        col = Math.max(0, Math.min(col, len));
 
         String removed;
-        if (col < line.length()) {
+        if (col < len) {
             int end = col + 1;
-            if (end < line.length() && Character.isHighSurrogate(line.charAt(col))
-                    && Character.isLowSurrogate(line.charAt(end))) {
+            if (end < len && Character.isHighSurrogate(charAt(base + col))
+                    && Character.isLowSurrogate(charAt(base + end))) {
                 end++;
             }
-            removed = line.substring(col, end);
-        } else if (row + 1 < allLines.length) {
+            removed = substring(base + col, base + end);
+        } else if (row + 1 < lineCount) {
             removed = "\n";
         } else {
             return new int[]{row, col};
@@ -294,8 +486,7 @@ public class TextEditor {
         redoStack.clear();
         dirty = true;
 
-        int offset = getOffset(row, col);
-        deleteText(offset, removed.length());
+        deleteText(base + col, removed.length());
 
         return new int[]{row, col};
     }
@@ -360,15 +551,15 @@ public class TextEditor {
         String name = filename.trim();
         try {
             Path path = Paths.get(name);
-            String[] allLines = getAllLines();
-            boolean emptyBuffer = allLines.length == 1 && allLines[0].isEmpty();
+            String text = getFullText();
 
             try (BufferedWriter writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                if (!emptyBuffer) {
-                    for (String line : allLines) {
-                        writer.write(line);
-                        writer.write('\n');
-                    }
+                // Write the buffer exactly as it is. Splitting on '\n' and writing '\n' after every
+                // element added a phantom blank line on each save, because "a\n" splits into ["a", ""].
+                writer.write(text);
+                // POSIX-style: a non-empty file ends with exactly one trailing newline (same as vim).
+                if (!text.isEmpty() && text.charAt(text.length() - 1) != '\n') {
+                    writer.write('\n');
                 }
             }
             dirty = false;
@@ -394,7 +585,7 @@ public class TextEditor {
             byte[] bytes = Files.readAllBytes(path);
             String content = new String(bytes, StandardCharsets.UTF_8);
 
-            if (content.startsWith("\uFEFF")) {
+            if (content.startsWith("﻿")) {
                 content = content.substring(1);
             }
 

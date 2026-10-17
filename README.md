@@ -92,6 +92,6 @@ mvn clean package
 Run directly:
 
 ```bash
-java -jar target/maghraby-editor-2.1.0.jar [filename]
+java -jar target/maghraby-editor-3.0.jar [filename]
 ```
 Engineered with ❤️ by Mohammed Elmaghraby.

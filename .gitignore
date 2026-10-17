@@ -9,6 +9,7 @@ dependency-reduced-pom.xml
 .settings/
 .classpath
 .project
+EditorBenchmark.java
 
 # Temporary & backup files (Vim, Gedit, Nano, etc.)
 *~

@@ -1,6 +1,7 @@
 package org.maghraby;
 
 import org.maghraby.syntax.HighlightState;
+import org.maghraby.syntax.HighlightStateCache;
 import org.maghraby.syntax.HighlighterRegistry;
 import org.maghraby.syntax.SyntaxHighlighter;
 import org.maghraby.syntax.SyntaxHighlighter.HighlightResult;
@@ -33,6 +34,7 @@ public class Main {
 
     private static final TextEditor editor = new TextEditor();
     private static final HighlighterRegistry highlighterRegistry = new HighlighterRegistry();
+    private static final HighlightStateCache stateCache = new HighlightStateCache(); // Render thread only
     private static volatile String currentFilename = "Untitled.txt";
 
     // 2D Cursor Coordinates (Character coordinates inside the buffer)
@@ -569,6 +571,11 @@ public class Main {
         int col = cursorCol;
         int textRows = rows - 3;
 
+        // Tell the highlight-state cache which lines were edited since the previous frame. Done before
+        // reading any text: an edit that sneaks in later is reported again and fixed on the next frame.
+        int dirtyFrom = editor.takeDirtyFromLine();
+        if (dirtyFrom != Integer.MAX_VALUE) stateCache.invalidateFrom(dirtyFrom);
+
         int lineCount = editor.getLineCount();
         row = Math.max(0, Math.min(row, lineCount - 1));
 
@@ -577,9 +584,10 @@ public class Main {
         else if (row >= topLine + textRows) topLine = row - textRows + 1;
         topLine = Math.max(0, Math.min(topLine, Math.max(0, lineCount - 1)));
 
-        // Extract necessary lines from the Piece Table
-        List<String> all = editor.getLines(0, topLine + textRows);
-        String cursorLineText = row < all.size() ? all.get(row) : editor.getLine(row);
+        // Only the visible lines are read; everything above is summarized by the highlight-state cache.
+        List<String> visible = editor.getLines(topLine, topLine + textRows);
+        String cursorLineText = (row >= topLine && row - topLine < visible.size())
+                ? visible.get(row - topLine) : editor.getLine(row);
         col = Math.max(0, Math.min(col, cursorLineText.length()));
 
         // --- Viewport Calculation (Horizontal) ---
@@ -596,16 +604,15 @@ public class Main {
         // --- Render Text Area ---
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(filename);
 
-        HighlightState state = HighlightState.NORMAL;
-        for (int i = 0; i < topLine && i < all.size(); i++) {
-            state = highlighter.highlightLine(all.get(i), state).nextState;
-        }
+        // Highlighter state at the top of the screen (multi-line comments / docstrings opened above it).
+        // The cache only scans lines it has not seen yet, instead of lines 0..topLine on every frame.
+        stateCache.useHighlighter(highlighter);
+        HighlightState state = stateCache.stateAt(topLine, editor::getLines);
 
         for (int i = 0; i < textRows; i++) {
-            int idx = topLine + i;
             sb.append(ESC).append('[').append(i + 2).append(";1H").append(ANSI_CLEAR_LINE);
-            if (idx < all.size()) {
-                String display = expandTabsAndSanitize(all.get(idx));
+            if (i < visible.size()) {
+                String display = expandTabsAndSanitize(visible.get(i));
                 HighlightResult hr = highlighter.highlightLine(display, state);
                 state = hr.nextState;
                 sb.append(sliceAnsi(hr.coloredLine, leftCol, cols));
