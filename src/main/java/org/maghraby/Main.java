@@ -14,6 +14,7 @@ import java.io.InputStream;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,6 +38,12 @@ public class Main {
     private static final HighlightStateCache stateCache = new HighlightStateCache(); // Render thread only
     private static volatile String currentFilename = "Untitled.txt";
 
+    // --- LSP (optional: null when no language server is installed for the current file) ---
+    private static volatile LspDocumentSync lsp = null;
+    // Diagnostics of the open file. The list is replaced as a whole (never mutated), so the render
+    // thread can read it without locking.
+    private static volatile List<LspClient.Diagnostic> diagnostics = new ArrayList<>();
+
     // 2D Cursor Coordinates (Character coordinates inside the buffer)
     private static volatile int cursorRow = 0;
     private static volatile int cursorCol = 0;
@@ -50,7 +57,7 @@ public class Main {
     private static final String DEFAULT_STATUS =
             "NORMAL | i:Insert  ::Command  u:Undo  r:Redo  F5:Run  q:Quit  (:help)";
     private static final String HELP =
-            ":w [file]  :wq  :q  :q!  :run [args]  :compile  |  F5 run  Ctrl+S save  Ctrl+Q force-quit";
+            ":w [file]  :wq  :q  :q!  :run [args]  :compile  :lsp [stop]  |  F5 run  Ctrl+S save  Ctrl+Q force-quit";
 
     private static volatile String statusMessage = DEFAULT_STATUS;
     private static volatile Mode currentMode = Mode.NORMAL;
@@ -85,6 +92,24 @@ public class Main {
     private static final String ANSI_BG_BLUE_FG_WHITE = ESC + "[44m" + ESC + "[37m";
     private static final String ANSI_BG_WHITE_FG_BLACK = ESC + "[47m" + ESC + "[30m";
 
+    // --- Autocomplete State ---
+    private static volatile List<String> activeSuggestions = null;
+    private static volatile int suggestionIndex = 0;
+    private static volatile boolean showingSuggestions = false;
+
+    public static void showSuggestionsUi(List<String> suggestions) {
+        activeSuggestions = suggestions;
+        suggestionIndex = 0;
+        showingSuggestions = true;
+        needsRedraw = true; // لتحديث الشاشة فوراً
+    }
+
+    public static void closeSuggestions() {
+        showingSuggestions = false;
+        activeSuggestions = null;
+        needsRedraw = true;
+    }
+
     enum Mode { NORMAL, INSERT, COMMAND }
 
     private static PrintStream createOut() {
@@ -111,6 +136,7 @@ public class Main {
         if (args.length > 0 && !args[0].trim().isEmpty()) {
             currentFilename = args[0].trim();
             statusMessage = editor.loadFromFile(currentFilename);
+            startLsp(currentFilename); // background: never delays startup
         }
 
         Runtime.getRuntime().addShutdownHook(new Thread(Main::restoreTerminal, "Terminal-Restore"));
@@ -137,7 +163,8 @@ public class Main {
             if (renderThread != null) {
                 try { renderThread.join(1000); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
             }
-            restoreTerminal();
+            restoreTerminal(); // give the screen back first, the language server shutdown may take a moment
+            stopLsp(true);
         }
     }
 
@@ -283,6 +310,11 @@ public class Main {
             int[] pos = editor.insertAt(cursorRow, cursorCol, s);
             cursorRow = pos[0];
             cursorCol = pos[1];
+
+            LspDocumentSync currentLsp = lsp;
+            if (currentLsp != null) {
+                currentLsp.requestSuggestions(cursorRow, cursorCol);
+            }
         } else if (currentMode == Mode.COMMAND) {
             commandInput.append(s);
         } else if (s.length() == 1) {
@@ -311,6 +343,20 @@ public class Main {
     }
 
     private static void handleTab() {
+        if (currentMode == Mode.INSERT) {
+            if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
+                String selectedSuggestion = activeSuggestions.get(suggestionIndex);
+                int[] pos = editor.insertAt(cursorRow, cursorCol, selectedSuggestion);
+                cursorRow = pos[0];
+                cursorCol = pos[1];
+                closeSuggestions();
+                return;
+            }
+
+            int[] pos = editor.insertAt(cursorRow, cursorCol, "\n");
+            cursorRow = pos[0];
+            cursorCol = pos[1];
+        }
         if (currentMode != Mode.INSERT) return;
         int spaces = TAB_WIDTH - (cursorCol % TAB_WIDTH);
         StringBuilder sb = new StringBuilder();
@@ -342,10 +388,19 @@ public class Main {
 
     private static void handleEnter() {
         if (currentMode == Mode.INSERT) {
+            if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
+                String selectedSuggestion = activeSuggestions.get(suggestionIndex);
+                int[] pos = editor.insertAt(cursorRow, cursorCol, selectedSuggestion);
+                cursorRow = pos[0];
+                cursorCol = pos[1];
+                closeSuggestions();
+                return;
+            }
+
             int[] pos = editor.insertAt(cursorRow, cursorCol, "\n");
             cursorRow = pos[0];
             cursorCol = pos[1];
-        } else if (currentMode == Mode.COMMAND) {
+        }else if (currentMode == Mode.COMMAND) {
             String cmd = commandInput.toString().trim();
             commandInput.setLength(0);
             currentMode = Mode.NORMAL;
@@ -354,6 +409,10 @@ public class Main {
     }
 
     private static void handleEscape() {
+        if (showingSuggestions) {
+            closeSuggestions();
+            return;
+        }
         if (currentMode != Mode.NORMAL) {
             currentMode = Mode.NORMAL;
             commandInput.setLength(0);
@@ -362,6 +421,15 @@ public class Main {
     }
 
     private static void handleArrow(int rowDelta, int colDelta) {
+        if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
+            if (rowDelta > 0) { // Down
+                suggestionIndex = (suggestionIndex + 1) % activeSuggestions.size();
+                return;
+            } else if (rowDelta < 0) { // UP
+                suggestionIndex = (suggestionIndex - 1 + activeSuggestions.size()) % activeSuggestions.size();
+                return;
+            }
+        }
         if (currentMode == Mode.COMMAND) return;
 
         if (colDelta < 0) {
@@ -426,7 +494,11 @@ public class Main {
         String msg = editor.saveToFile(target);
         statusMessage = msg;
         boolean ok = msg.startsWith("Saved");
-        if (ok) currentFilename = target;
+        if (ok) {
+            boolean renamed = !target.equals(currentFilename);
+            currentFilename = target;
+            if (renamed) startLsp(target); // a new name can mean a different language (Untitled.txt -> a.go)
+        }
         return ok;
     }
 
@@ -446,9 +518,106 @@ public class Main {
             case "wq": case "x": if (saveCommand(arg)) running = false; break;
             case "run": runCommand(true, arg); break;
             case "compile": case "build": runCommand(false, arg); break;
+            case "lsp":
+                if (arg.equals("stop")) {
+                    stopLsp();
+                    statusMessage = "LSP stopped.";
+                } else {
+                    startLsp(currentFilename);
+                }
+                break;
             case "help": case "h": statusMessage = HELP; break;
             default: statusMessage = "Unknown command: " + cmdLine + "   (try :help)";
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Language Server (LSP)
+    // ------------------------------------------------------------------
+
+    /** (Re)starts the language server for `filename`. Everything slow happens on background threads. */
+    private static void startLsp(String filename) {
+        stopLsp();
+        LspDocumentSync sync = LspDocumentSync.tryStart(filename, editor, new LspClient.Listener() {
+            @Override
+            public void onDiagnostics(String uri, List<LspClient.Diagnostic> list) { // reader thread
+                LspDocumentSync s = lsp;
+                if (s != null && s.isCurrent(uri)) {
+                    diagnostics = list;
+                    needsRedraw = true;
+                }
+            }
+
+            @Override
+            public void onExit(String reason) { // reader thread
+                LspDocumentSync s = lsp;
+                lsp = null;
+                diagnostics = new ArrayList<>();
+                statusMessage = "LSP server exited. :lsp to restart";
+                needsRedraw = true;
+                if (s != null) {
+                    Thread t = new Thread(s::close, "LSP-Cleanup");
+                    t.setDaemon(true);
+                    t.start();
+                }
+            }
+        });
+        lsp = sync;
+        if (sync != null) {
+            sync.open(Paths.get(filename.trim()).toAbsolutePath().normalize());
+        } else {
+            statusMessage = "No language server found for '" + filename + "' (is it installed and on PATH?)";
+        }
+    }
+
+    private static void stopLsp() {
+        stopLsp(false);
+    }
+
+    /**
+     * Shutting a server down can take over a second, so unless we are quitting it happens on a
+     * background thread and the editor never stalls.
+     */
+    private static void stopLsp(boolean blocking) {
+        LspDocumentSync s = lsp;
+        lsp = null;
+        diagnostics = new ArrayList<>();
+        if (s == null) return;
+        if (blocking) {
+            s.close();
+        } else {
+            Thread t = new Thread(s::close, "LSP-Cleanup");
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    /** " | E:2 W:1" for the header, or "" when there is no language server. */
+    private static String lspSummary() {
+        LspDocumentSync s = lsp;
+        if (s == null) return "";
+        if (!s.client().ready().isDone()) return " | LSP starting...";
+        int errors = 0, warnings = 0;
+        for (LspClient.Diagnostic d : diagnostics) {
+            if (d.severity == 1) errors++;
+            else if (d.severity == 2) warnings++;
+        }
+        return " | E:" + errors + " W:" + warnings;
+    }
+
+    /** The most severe diagnostic touching `row`, formatted for one line, or null. */
+    private static String diagnosticAt(int row) {
+        LspClient.Diagnostic best = null;
+        for (LspClient.Diagnostic d : diagnostics) {
+            // An end position at column 0 of the next line is exclusive: it doesn't touch that line.
+            int last = (d.endCol == 0 && d.endLine > d.line) ? d.endLine - 1 : d.endLine;
+            if (row < d.line || row > last) continue;
+            if (best == null || d.severity < best.severity) best = d;
+        }
+        if (best == null) return null;
+        String kind = best.severity == 1 ? "error" : best.severity == 2 ? "warning" : best.severity == 3 ? "info" : "hint";
+        return kind + ": " + best.message.replace('\n', ' ').replace('\r', ' ')
+                + (best.source != null ? " [" + best.source + "]" : "");
     }
 
     /** Saves, builds, and optionally runs the file while handing over terminal access. */
@@ -598,7 +767,7 @@ public class Main {
 
         // --- Render Header ---
         String header = " maghraby Editor | " + sanitize(filename) + (editor.isDirty() ? " [+]" : "")
-                + " | Mode: " + mode;
+                + " | Mode: " + mode + lspSummary();
         sb.append(ESC).append("[1;1H").append(ANSI_BG_BLUE_FG_WHITE).append(padRight(header, cols)).append(ANSI_RESET);
 
         // --- Render Text Area ---
@@ -630,10 +799,34 @@ public class Main {
             sb.append(shown);
             sb.append(ESC).append('[').append(rows).append(';').append(Math.min(shown.length() + 1, cols)).append('H');
         } else {
+            // The bottom line is free outside command mode: show the diagnostic of the cursor line there.
+            String diag = diagnosticAt(row);
+            if (diag != null) {
+                if (diag.length() > cols - 1) diag = diag.substring(0, cols - 1);
+                sb.append(ESC).append("[31m").append(sanitize(diag)).append(ANSI_RESET);
+            }
             int screenRow = (row - topLine) + 2;
             int screenCol = (vcol - leftCol) + 1;
             sb.append(ESC).append('[').append(Math.max(2, Math.min(screenRow, rows - 2))).append(';')
                     .append(Math.max(1, Math.min(screenCol, cols))).append('H');
+        }
+        // --- Render Suggestions Popup ---
+        if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
+            int popupRow = (row - topLine) + 3; // أسفل السطر الحالي بصف واحد
+            int popupCol = (vcol - leftCol) + 1;
+
+            for (int i = 0; i < Math.min(5, activeSuggestions.size()); i++) { // عرض أول 5 اقتراحات
+                if (popupRow + i < rows - 1) {
+                    String item = activeSuggestions.get(i);
+                    String prefix = (i == suggestionIndex) ? "> " : "  "; // تحديد العنصر المختار
+                    String lineText = padRight(prefix + item, 20);
+
+                    sb.append(ESC).append('[').append(popupRow + i).append(';').append(popupCol).append('H')
+                            .append(i == suggestionIndex ? ANSI_BG_WHITE_FG_BLACK : ANSI_BG_BLUE_FG_WHITE)
+                            .append(lineText)
+                            .append(ANSI_RESET);
+                }
+            }
         }
         sb.append(ANSI_SHOW_CURSOR);
         return sb.toString();

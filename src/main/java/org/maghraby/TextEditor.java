@@ -47,6 +47,19 @@ public class TextEditor {
     // per-line caches (e.g. syntax-highlighter state) valid for everything above the edit.
     private int dirtyFromLine = Integer.MAX_VALUE;
 
+    // Optional observer of every mutation (used by the LSP document sync). It is called from inside
+    // insertText/deleteText while this monitor is held, so it must only enqueue and return.
+    private EditListener changeListener;
+
+    public synchronized void setChangeListener(EditListener listener) {
+        this.changeListener = listener;
+    }
+
+    /** Detaches `listener` only if it is still the active one (a newer listener may have replaced it). */
+    public synchronized void removeChangeListener(EditListener listener) {
+        if (this.changeListener == listener) this.changeListener = null;
+    }
+
     public TextEditor() {
         this.undoStack = new MyStack();
         this.redoStack = new MyStack();
@@ -294,6 +307,11 @@ public class TextEditor {
         if (newText == null || newText.isEmpty()) return;
         offset = Math.max(0, Math.min(offset, docLength));
 
+        if (changeListener != null) { // position BEFORE the edit, as LSP expects
+            int line = upperBound(offset) - 1;
+            changeListener.onInsert(line, offset - lineStarts[line], newText);
+        }
+
         int n = newText.length();
         int addStart = addBuffer.length();
         addBuffer.append(newText);
@@ -347,6 +365,12 @@ public class TextEditor {
         int end = (int) Math.min((long) offset + deleteLength, docLength);
         if (offset >= end) return;
         int totalRemoved = end - offset;
+
+        if (changeListener != null) { // range BEFORE the edit, as LSP expects
+            int sl = upperBound(offset) - 1;
+            int el = upperBound(end) - 1;
+            changeListener.onDelete(sl, offset - lineStarts[sl], el, end - lineStarts[el]);
+        }
 
         int pos = 0;
         int i = 0;
