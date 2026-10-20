@@ -93,22 +93,53 @@ public class Main {
     private static final String ANSI_BG_WHITE_FG_BLACK = ESC + "[47m" + ESC + "[30m";
 
     // --- Autocomplete State ---
-    private static volatile List<String> activeSuggestions = null;
+    private static volatile List<LspDocumentSync.Completion> activeSuggestions = null;
     private static volatile int suggestionIndex = 0;
     private static volatile boolean showingSuggestions = false;
 
-    public static void showSuggestionsUi(List<String> suggestions) {
+    /** Called from the LSP thread once completions for the current cursor position arrive. */
+    private static void showSuggestionsUi(List<LspDocumentSync.Completion> suggestions) {
+        if (suggestions == null || suggestions.isEmpty()) {
+            closeSuggestions(false);
+            return;
+        }
         activeSuggestions = suggestions;
         suggestionIndex = 0;
         showingSuggestions = true;
-        needsRedraw = true; // لتحديث الشاشة فوراً
+        needsRedraw = true;
     }
 
-    public static void closeSuggestions() {
+    private static void closeSuggestions() {
+        closeSuggestions(true);
+    }
+
+    /** @param cancelPending also drop a request still in flight, so it cannot pop up later. */
+    private static void closeSuggestions(boolean cancelPending) {
+        if (cancelPending) {
+            LspDocumentSync s = lsp;
+            if (s != null) s.cancelSuggestions();
+        }
         showingSuggestions = false;
         activeSuggestions = null;
         needsRedraw = true;
     }
+
+    // --- Colour helpers (256-colour palette) ---
+    private static final String BOLD = ESC + "[1m";
+    private static final String BOLD_OFF = ESC + "[22m";
+    private static final String FG_DEFAULT = ESC + "[39m";
+    private static volatile boolean statusFadePending = false; // a status message is about to fade
+    private static final String[] SPINNER = {
+            "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
+    };
+    private static final long STATUS_TTL_MS = 5000; // a status message fades back to the mode hint
+
+    private static String fg(int n) { return ESC + "[38;5;" + n + "m"; }
+    private static String bg(int n) { return ESC + "[48;5;" + n + "m"; }
+
+    // Render thread only: when the current status message first appeared.
+    private static String lastStatusSeen = "";
+    private static long statusSince = System.currentTimeMillis();
 
     enum Mode { NORMAL, INSERT, COMMAND }
 
@@ -310,11 +341,7 @@ public class Main {
             int[] pos = editor.insertAt(cursorRow, cursorCol, s);
             cursorRow = pos[0];
             cursorCol = pos[1];
-
-            LspDocumentSync currentLsp = lsp;
-            if (currentLsp != null) {
-                currentLsp.requestSuggestions(cursorRow, cursorCol);
-            }
+            triggerCompletion();
         } else if (currentMode == Mode.COMMAND) {
             commandInput.append(s);
         } else if (s.length() == 1) {
@@ -342,22 +369,74 @@ public class Main {
         }
     }
 
-    private static void handleTab() {
-        if (currentMode == Mode.INSERT) {
-            if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
-                String selectedSuggestion = activeSuggestions.get(suggestionIndex);
-                int[] pos = editor.insertAt(cursorRow, cursorCol, selectedSuggestion);
-                cursorRow = pos[0];
-                cursorCol = pos[1];
-                closeSuggestions();
-                return;
-            }
+    // ------------------------------------------------------------------
+    // Completion helpers (input thread)
+    // ------------------------------------------------------------------
 
-            int[] pos = editor.insertAt(cursorRow, cursorCol, "\n");
+    /** The identifier characters immediately before the cursor ("pri" in "System.out.pri|"). */
+    private static String identifierPrefix() {
+        String line = editor.getLine(cursorRow);
+        int end = Math.min(cursorCol, line.length());
+        int start = end;
+        while (start > 0 && Character.isJavaIdentifierPart(line.charAt(start - 1))) start--;
+        return line.substring(start, end);
+    }
+
+    /** True when the character before the cursor is a member-access trigger: '.', '->' or '::'. */
+    private static boolean afterTriggerChar() {
+        String line = editor.getLine(cursorRow);
+        int end = Math.min(cursorCol, line.length());
+        if (end == 0) return false;
+        char c = line.charAt(end - 1);
+        if (c == '.') return true;
+        if (end >= 2) {
+            char p = line.charAt(end - 2);
+            return (c == '>' && p == '-') || (c == ':' && p == ':');
+        }
+        return false;
+    }
+
+    /** Asks the language server for completions, but only when it makes sense at the cursor. */
+    private static void triggerCompletion() {
+        LspDocumentSync s = lsp;
+        if (s == null) return;
+        String prefix = identifierPrefix();
+        if (prefix.isEmpty() && !afterTriggerChar()) {
+            if (showingSuggestions) closeSuggestions(); else s.cancelSuggestions();
+            return;
+        }
+        s.requestSuggestions(cursorRow, cursorCol, prefix, Main::showSuggestionsUi);
+    }
+
+    /** Replaces the typed prefix with the highlighted suggestion. */
+    private static void acceptSuggestion() {
+        List<LspDocumentSync.Completion> list = activeSuggestions;
+        if (list == null || list.isEmpty()) return;
+        LspDocumentSync.Completion c = list.get(Math.max(0, Math.min(suggestionIndex, list.size() - 1)));
+        closeSuggestions();
+
+        int from = Math.min(c.replaceFromCol, cursorCol);
+        for (int n = cursorCol - from; n > 0; n--) {
+            int[] pos = editor.deleteAt(cursorRow, cursorCol);
             cursorRow = pos[0];
             cursorCol = pos[1];
         }
+        int[] pos = editor.insertAt(cursorRow, cursorCol, c.insertText);
+        cursorRow = pos[0];
+        cursorCol = pos[1];
+    }
+
+    private static boolean suggestionsOpen() {
+        List<LspDocumentSync.Completion> l = activeSuggestions;
+        return showingSuggestions && l != null && !l.isEmpty();
+    }
+
+    private static void handleTab() {
         if (currentMode != Mode.INSERT) return;
+        if (suggestionsOpen()) { // Tab accepts the highlighted suggestion
+            acceptSuggestion();
+            return;
+        }
         int spaces = TAB_WIDTH - (cursorCol % TAB_WIDTH);
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < spaces; i++) sb.append(' ');
@@ -369,6 +448,7 @@ public class Main {
             int[] pos = editor.deleteAt(cursorRow, cursorCol);
             cursorRow = pos[0];
             cursorCol = pos[1];
+            if (showingSuggestions) triggerCompletion(); // narrows, or closes when nothing is left to complete
         } else if (currentMode == Mode.COMMAND) {
             if (commandInput.length() > 0) {
                 commandInput.deleteCharAt(commandInput.length() - 1);
@@ -381,6 +461,7 @@ public class Main {
 
     private static void handleDeleteKey() {
         if (currentMode != Mode.INSERT) return;
+        if (showingSuggestions) closeSuggestions();
         int[] pos = editor.deleteForward(cursorRow, cursorCol);
         cursorRow = pos[0];
         cursorCol = pos[1];
@@ -388,19 +469,25 @@ public class Main {
 
     private static void handleEnter() {
         if (currentMode == Mode.INSERT) {
-            if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
-                String selectedSuggestion = activeSuggestions.get(suggestionIndex);
-                int[] pos = editor.insertAt(cursorRow, cursorCol, selectedSuggestion);
-                cursorRow = pos[0];
-                cursorCol = pos[1];
-                closeSuggestions();
-                return;
-            }
+            if (showingSuggestions) closeSuggestions(); else if (lsp != null) lsp.cancelSuggestions();
 
-            int[] pos = editor.insertAt(cursorRow, cursorCol, "\n");
+            // Auto-indent: carry over the current line's indentation, one level deeper after an opener.
+            String before = editor.getLine(cursorRow);
+            before = before.substring(0, Math.min(cursorCol, before.length()));
+            int ws = 0;
+            while (ws < before.length() && (before.charAt(ws) == ' ' || before.charAt(ws) == '\t')) ws++;
+            StringBuilder insert = new StringBuilder("\n").append(before, 0, ws);
+            String trimmed = before.stripTrailing();
+            if (!trimmed.isEmpty()) {
+                char last = trimmed.charAt(trimmed.length() - 1);
+                if (last == '{' || last == '(' || last == '[' || last == ':') {
+                    for (int i = 0; i < TAB_WIDTH; i++) insert.append(' ');
+                }
+            }
+            int[] pos = editor.insertAt(cursorRow, cursorCol, insert.toString());
             cursorRow = pos[0];
             cursorCol = pos[1];
-        }else if (currentMode == Mode.COMMAND) {
+        } else if (currentMode == Mode.COMMAND) {
             String cmd = commandInput.toString().trim();
             commandInput.setLength(0);
             currentMode = Mode.NORMAL;
@@ -421,14 +508,13 @@ public class Main {
     }
 
     private static void handleArrow(int rowDelta, int colDelta) {
-        if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
-            if (rowDelta > 0) { // Down
-                suggestionIndex = (suggestionIndex + 1) % activeSuggestions.size();
-                return;
-            } else if (rowDelta < 0) { // UP
-                suggestionIndex = (suggestionIndex - 1 + activeSuggestions.size()) % activeSuggestions.size();
+        if (suggestionsOpen()) {
+            List<LspDocumentSync.Completion> list = activeSuggestions;
+            if (list != null && rowDelta != 0) { // Up/Down move the selection
+                suggestionIndex = (suggestionIndex + rowDelta + list.size()) % list.size();
                 return;
             }
+            closeSuggestions(); // Left/Right leave the word
         }
         if (currentMode == Mode.COMMAND) return;
 
@@ -456,15 +542,18 @@ public class Main {
     }
 
     private static void handleHome() {
+        if (showingSuggestions) closeSuggestions();
         if (currentMode != Mode.COMMAND) cursorCol = 0;
     }
 
     private static void handleEnd() {
+        if (showingSuggestions) closeSuggestions();
         if (currentMode != Mode.COMMAND) cursorCol = editor.getLineLength(cursorRow);
     }
 
     private static void handlePage(int direction) {
         if (currentMode == Mode.COMMAND) return;
+        if (showingSuggestions) closeSuggestions();
         int step = Math.max(1, termRows - 4);
         cursorRow += direction * step;
         cursorCol = goalCol;
@@ -592,21 +681,33 @@ public class Main {
         }
     }
 
-    /** " | E:2 W:1" for the header, or "" when there is no language server. */
-    private static String lspSummary() {
+    /** Right-hand header badge for the language server: {coloured, plain} (plain is used to measure width). */
+    private static String[] lspBadge() {
         LspDocumentSync s = lsp;
-        if (s == null) return "";
-        if (!s.client().ready().isDone()) return " | LSP starting...";
+        if (s == null) return new String[]{"", ""};
+        if (!s.client().ready().isDone()) {
+            String frame = SPINNER[(int) ((System.currentTimeMillis() / 100) % SPINNER.length)];
+            String plain = frame + " LSP starting ";
+            return new String[]{fg(221) + plain + FG_DEFAULT, plain};
+        }
         int errors = 0, warnings = 0;
         for (LspClient.Diagnostic d : diagnostics) {
             if (d.severity == 1) errors++;
             else if (d.severity == 2) warnings++;
         }
-        return " | E:" + errors + " W:" + warnings;
+        if (errors == 0 && warnings == 0) {
+            String plain = "✔ LSP ok ";
+            return new String[]{fg(78) + plain + FG_DEFAULT, plain};
+        }
+        String e = "● " + errors + " ";
+        String w = "▲ " + warnings + " ";
+        return new String[]{
+                fg(203) + e + fg(214) + w + FG_DEFAULT,
+                e + w};
     }
 
-    /** The most severe diagnostic touching `row`, formatted for one line, or null. */
-    private static String diagnosticAt(int row) {
+    /** The most severe diagnostic touching `row`, or null. */
+    private static LspClient.Diagnostic bestDiagnosticAt(int row) {
         LspClient.Diagnostic best = null;
         for (LspClient.Diagnostic d : diagnostics) {
             // An end position at column 0 of the next line is exclusive: it doesn't touch that line.
@@ -614,10 +715,11 @@ public class Main {
             if (row < d.line || row > last) continue;
             if (best == null || d.severity < best.severity) best = d;
         }
-        if (best == null) return null;
-        String kind = best.severity == 1 ? "error" : best.severity == 2 ? "warning" : best.severity == 3 ? "info" : "hint";
-        return kind + ": " + best.message.replace('\n', ' ').replace('\r', ' ')
-                + (best.source != null ? " [" + best.source + "]" : "");
+        return best;
+    }
+
+    private static int severityColor(int severity) {
+        return severity == 1 ? 203 : severity == 2 ? 214 : severity == 3 ? 81 : 245;
     }
 
     /** Saves, builds, and optionally runs the file while handing over terminal access. */
@@ -716,7 +818,93 @@ public class Main {
                 Thread.currentThread().interrupt();
                 return;
             }
+            // Animations (LSP spinner, fading status message) only need a repaint ~10x per second.
+            long now = System.nanoTime();
+            if (now - lastAnimTick > 100_000_000L && (statusFadePending || lspStarting())) {
+                lastAnimTick = now;
+                needsRedraw = true;
+            }
         }
+    }
+
+    private static long lastAnimTick = 0;
+
+    private static boolean lspStarting() {
+        LspDocumentSync s = lsp;
+        return s != null && !s.client().ready().isDone();
+    }
+
+    private static String modeHint(Mode mode) {
+        switch (mode) {
+            case INSERT: return "-- INSERT --  Esc:normal  Tab:accept/indent  ↑↓:choose suggestion";
+            case COMMAND: return HELP;
+            default: return DEFAULT_STATUS;
+        }
+    }
+
+    private static int modeColor(Mode mode) {
+        switch (mode) {
+            case INSERT: return 78;   // green
+            case COMMAND: return 177; // violet
+            default: return 75;       // blue
+        }
+    }
+
+    /** {background, foreground} 256-colour numbers for a status message, chosen by what it says. */
+    private static int[] statusColors(String msg, Mode mode) {
+        String m = msg.toLowerCase(java.util.Locale.ROOT);
+        if (m.contains("unsaved")) return new int[]{172, 16};
+        if (m.contains("error") || m.contains("failed") || m.contains("not found") || m.contains("unknown command")
+                || m.contains("no language server") || m.contains("exited with code 1") || m.contains("can't")
+                || m.contains("internal")) return new int[]{124, 231};
+        if (m.startsWith("saved") || m.startsWith("loaded") || m.startsWith("undone") || m.startsWith("redone")
+                || m.contains("compiled ok") || m.contains("syntax ok") || m.contains("exited with code 0")
+                || m.contains("lsp stopped")) return new int[]{28, 231};
+        return new int[]{238, 252};
+    }
+
+    private static char kindLetter(int kind) {
+        switch (kind) {
+            case 2: case 3: case 4: return 'f';          // method, function, constructor
+            case 5: case 6: case 10: return 'v';         // field, variable, property
+            case 7: case 8: case 22: case 13: return 'C'; // class, interface, struct, enum
+            case 9: return 'm';                          // module
+            case 14: return 'k';                         // keyword
+            case 15: return 's';                         // snippet
+            case 21: case 20: return 'c';                // constant, enum member
+            default: return '·';
+        }
+    }
+
+    private static int kindColor(int kind) {
+        switch (kind) {
+            case 2: case 3: case 4: return 75;
+            case 5: case 6: case 10: return 81;
+            case 7: case 8: case 22: case 13: return 221;
+            case 9: return 141;
+            case 14: return 177;
+            case 21: case 20: return 215;
+            default: return 245;
+        }
+    }
+
+    private static String spaces(int n) {
+        if (n <= 0) return "";
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) sb.append(' ');
+        return sb.toString();
+    }
+
+    /** Lays out one full-width bar: coloured left text, coloured right text, filler in between. */
+    private static String bar(String left, int leftLen, String right, int rightLen, int cols, String barBg) {
+        StringBuilder sb = new StringBuilder(barBg);
+        sb.append(left);
+        if (leftLen + rightLen < cols) {
+            sb.append(barBg).append(spaces(cols - leftLen - rightLen)).append(right);
+        } else if (leftLen < cols) {
+            sb.append(barBg).append(spaces(cols - leftLen)); // not enough room for the right side
+        }
+        return sb.append(ANSI_RESET).toString();
     }
 
     private static String buildFrame() {
@@ -736,9 +924,12 @@ public class Main {
         String status = statusMessage;
         String command = commandInput.toString();
         String filename = currentFilename;
+        List<LspDocumentSync.Completion> suggestions = showingSuggestions ? activeSuggestions : null;
+        int selected = suggestionIndex;
         int row = cursorRow;
         int col = cursorCol;
         int textRows = rows - 3;
+        long now = System.currentTimeMillis();
 
         // Tell the highlight-state cache which lines were edited since the previous frame. Done before
         // reading any text: an edit that sneaks in later is reported again and fixed on the next frame.
@@ -747,6 +938,12 @@ public class Main {
 
         int lineCount = editor.getLineCount();
         row = Math.max(0, Math.min(row, lineCount - 1));
+
+        // --- Gutter geometry ---
+        int digits = String.valueOf(lineCount).length();
+        int gutterW = digits + 3;            // marker + number + space + separator
+        if (cols - gutterW < 10) gutterW = 0; // pathological narrow terminal: drop the gutter
+        int textCols = cols - gutterW;
 
         // --- Viewport Calculation (Vertical) ---
         if (row < topLine) topLine = row;
@@ -762,13 +959,19 @@ public class Main {
         // --- Viewport Calculation (Horizontal) ---
         int vcol = visualCol(cursorLineText, col);
         if (vcol < leftCol) leftCol = vcol;
-        else if (vcol >= leftCol + cols) leftCol = vcol - cols + 1;
+        else if (vcol >= leftCol + textCols) leftCol = vcol - textCols + 1;
         leftCol = Math.max(0, leftCol);
 
-        // --- Render Header ---
-        String header = " maghraby Editor | " + sanitize(filename) + (editor.isDirty() ? " [+]" : "")
-                + " | Mode: " + mode + lspSummary();
-        sb.append(ESC).append("[1;1H").append(ANSI_BG_BLUE_FG_WHITE).append(padRight(header, cols)).append(ANSI_RESET);
+        // --- Header: mode badge | title | file | LSP badge ---
+        int mc = modeColor(mode);
+        String badgeText = " " + mode + " ";
+        String leftPlain = " maghraby  " + sanitize(filename) + (editor.isDirty() ? " ●" : "");
+        String leftColored = bg(mc) + fg(16) + BOLD + badgeText + BOLD_OFF + bg(235) + fg(75) + BOLD + " maghraby " + BOLD_OFF
+                + fg(240) + " │ " + FG_DEFAULT + fg(252) + sanitize(filename) + FG_DEFAULT
+                + (editor.isDirty() ? fg(214) + " ●" + FG_DEFAULT : "");
+        int leftLen = badgeText.length() + " maghraby ".length() + 3 + sanitize(filename).length() + (editor.isDirty() ? 2 : 0);
+        String[] badge = lspBadge();
+        sb.append(ESC).append("[1;1H").append(bar(leftColored, leftLen, badge[0], badge[1].length(), cols, bg(235)));
 
         // --- Render Text Area ---
         SyntaxHighlighter highlighter = highlighterRegistry.forFileName(filename);
@@ -780,54 +983,130 @@ public class Main {
 
         for (int i = 0; i < textRows; i++) {
             sb.append(ESC).append('[').append(i + 2).append(";1H").append(ANSI_CLEAR_LINE);
+            int lineIdx = topLine + i;
+            if (gutterW > 0) {
+                if (i < visible.size()) {
+                    boolean current = lineIdx == row;
+                    LspClient.Diagnostic d = bestDiagnosticAt(lineIdx);
+                    if (d != null) {
+                        sb.append(fg(severityColor(d.severity))).append(d.severity == 1 ? "●" : d.severity == 2 ? "▲" : "•");
+                    } else if (current) {
+                        sb.append(fg(220)).append('›');
+                    } else {
+                        sb.append(' ');
+                    }
+                    String num = String.valueOf(lineIdx + 1);
+                    sb.append(current ? fg(220) + BOLD : fg(241))
+                            .append(spaces(digits - num.length())).append(num).append(ANSI_RESET)
+                            .append(' ').append(current ? fg(220) : fg(238)).append('│').append(ANSI_RESET);
+                } else {
+                    sb.append(fg(61)).append('~').append(ANSI_RESET);
+                }
+            }
             if (i < visible.size()) {
                 String display = expandTabsAndSanitize(visible.get(i));
                 HighlightResult hr = highlighter.highlightLine(display, state);
                 state = hr.nextState;
-                sb.append(sliceAnsi(hr.coloredLine, leftCol, cols));
+                sb.append(sliceAnsi(hr.coloredLine, leftCol, textCols));
             }
         }
 
-        // --- Render Status & Command Line ---
+        // --- Status bar (second to last row): message on the left, position on the right ---
+        String hint = modeHint(mode);
+        if (!status.equals(lastStatusSeen)) {
+            lastStatusSeen = status;
+            statusSince = now;
+        }
+        String shownStatus = status;
+        statusFadePending = false;
+        if (!status.equals(hint) && !status.equals(DEFAULT_STATUS)) {
+            if (now - statusSince >= STATUS_TTL_MS) shownStatus = hint; // old message fades back to the mode hint
+            else statusFadePending = true;
+        }
+        int[] sc = statusColors(shownStatus, mode);
+        int pct = lineCount <= 1 ? 100 : (int) Math.round(100.0 * row / (lineCount - 1));
+        String pos = " Ln " + (row + 1) + "/" + lineCount + "  Col " + (col + 1) + "  " + pct + "% ";
+        String msg = " " + sanitize(shownStatus);
+        int msgMax = Math.max(0, cols - pos.length());
+        if (msg.length() > msgMax) msg = msg.substring(0, msgMax);
+        String msgColored = bg(sc[0]) + fg(sc[1]) + msg;
+        String posColored = bg(mc) + fg(16) + BOLD + pos + BOLD_OFF;
         sb.append(ESC).append('[').append(rows - 1).append(";1H")
-                .append(ANSI_BG_WHITE_FG_BLACK).append(padRight(" " + sanitize(status), cols)).append(ANSI_RESET);
+                .append(bar(msgColored, msg.length(), posColored, pos.length(), cols, bg(sc[0])));
 
+        // --- Bottom line: command prompt, or the diagnostic under the cursor ---
         sb.append(ESC).append('[').append(rows).append(";1H").append(ANSI_CLEAR_LINE);
+        String cursorSeq;
         if (mode == Mode.COMMAND) {
             String shown = ":" + sanitize(command);
             if (shown.length() > cols - 1) shown = shown.substring(shown.length() - (cols - 1));
-            sb.append(shown);
-            sb.append(ESC).append('[').append(rows).append(';').append(Math.min(shown.length() + 1, cols)).append('H');
+            sb.append(fg(177)).append(BOLD).append(':').append(BOLD_OFF).append(FG_DEFAULT).append(shown, 1, shown.length());
+            cursorSeq = ESC + "[" + rows + ";" + Math.min(shown.length() + 1, cols) + "H";
         } else {
-            // The bottom line is free outside command mode: show the diagnostic of the cursor line there.
-            String diag = diagnosticAt(row);
-            if (diag != null) {
-                if (diag.length() > cols - 1) diag = diag.substring(0, cols - 1);
-                sb.append(ESC).append("[31m").append(sanitize(diag)).append(ANSI_RESET);
+            LspClient.Diagnostic d = bestDiagnosticAt(row);
+            if (d != null) {
+                String kind = d.severity == 1 ? "error" : d.severity == 2 ? "warning" : d.severity == 3 ? "info" : "hint";
+                String text = " " + kind + ": " + d.message.replace('\n', ' ').replace('\r', ' ')
+                        + (d.source != null ? " [" + d.source + "]" : "");
+                if (text.length() > cols - 1) text = text.substring(0, cols - 1);
+                sb.append(fg(severityColor(d.severity))).append(sanitize(text)).append(ANSI_RESET);
             }
             int screenRow = (row - topLine) + 2;
-            int screenCol = (vcol - leftCol) + 1;
-            sb.append(ESC).append('[').append(Math.max(2, Math.min(screenRow, rows - 2))).append(';')
-                    .append(Math.max(1, Math.min(screenCol, cols))).append('H');
+            int screenCol = gutterW + (vcol - leftCol) + 1;
+            cursorSeq = ESC + "[" + Math.max(2, Math.min(screenRow, rows - 2)) + ";"
+                    + Math.max(1, Math.min(screenCol, cols)) + "H";
         }
-        // --- Render Suggestions Popup ---
-        if (showingSuggestions && activeSuggestions != null && !activeSuggestions.isEmpty()) {
-            int popupRow = (row - topLine) + 3; // أسفل السطر الحالي بصف واحد
-            int popupCol = (vcol - leftCol) + 1;
 
-            for (int i = 0; i < Math.min(5, activeSuggestions.size()); i++) { // عرض أول 5 اقتراحات
-                if (popupRow + i < rows - 1) {
-                    String item = activeSuggestions.get(i);
-                    String prefix = (i == suggestionIndex) ? "> " : "  "; // تحديد العنصر المختار
-                    String lineText = padRight(prefix + item, 20);
+        // --- Suggestions popup (drawn last so it floats above the text) ---
+        if (mode == Mode.INSERT && suggestions != null && !suggestions.isEmpty()) {
+            final int maxItems = 8;
+            int total = suggestions.size();
+            selected = Math.max(0, Math.min(selected, total - 1));
+            int first = selected >= maxItems ? selected - maxItems + 1 : 0;
+            int n = Math.min(maxItems, total - first);
 
-                    sb.append(ESC).append('[').append(popupRow + i).append(';').append(popupCol).append('H')
-                            .append(i == suggestionIndex ? ANSI_BG_WHITE_FG_BLACK : ANSI_BG_BLUE_FG_WHITE)
-                            .append(lineText)
-                            .append(ANSI_RESET);
-                }
+            int width = 12;
+            for (int k = first; k < first + n; k++) {
+                LspDocumentSync.Completion c = suggestions.get(k);
+                width = Math.max(width, 4 + c.label.length() + (c.detail.isEmpty() ? 0 : 2 + Math.min(c.detail.length(), 28)));
             }
+            width = Math.min(width, Math.min(cols, 64));
+
+            int cursorScreenRow = (row - topLine) + 2;
+            int blockH = n + 1; // items + footer
+            int popupRow = cursorScreenRow + 1;
+            if (popupRow + blockH - 1 > rows - 2) popupRow = Math.max(2, cursorScreenRow - blockH);
+            int startVcol = vcol - Math.max(0, col - Math.min(suggestions.get(0).replaceFromCol, col));
+            int popupCol = Math.max(1, Math.min(gutterW + (startVcol - leftCol) + 1, cols - width + 1));
+
+            for (int k = 0; k < n; k++) {
+                LspDocumentSync.Completion c = suggestions.get(first + k);
+                boolean sel = first + k == selected;
+                String label = sanitize(c.label.replace('\n', ' '));
+                String detail = c.detail.isEmpty() ? "" : sanitize(c.detail.replace('\n', ' '));
+                int room = width - 4 - label.length();
+                if (label.length() > width - 4) label = label.substring(0, Math.max(0, width - 4));
+                if (detail.length() > room - 2) detail = room > 3 ? detail.substring(0, room - 3) + "…" : "";
+                int pad = Math.max(0, width - 4 - label.length() - (detail.isEmpty() ? 0 : detail.length() + 2));
+
+                sb.append(ESC).append('[').append(popupRow + k).append(';').append(popupCol).append('H')
+                        .append(sel ? bg(24) : bg(236))
+                        .append(' ').append(fg(kindColor(c.kind))).append(BOLD).append(kindLetter(c.kind)).append(BOLD_OFF)
+                        .append(' ').append(sel ? fg(231) + BOLD : fg(252)).append(label).append(BOLD_OFF)
+                        .append(detail.isEmpty() ? "" : "  " + fg(sel ? 117 : 245) + detail)
+                        .append(spaces(pad)).append(' ').append(ANSI_RESET);
+            }
+            String footer = " " + (selected + 1) + "/" + total + "  Tab accept  Esc close";
+            if (footer.length() > width) footer = footer.substring(0, width);
+            sb.append(ESC).append('[').append(popupRow + n).append(';').append(popupCol).append('H')
+                    .append(bg(235)).append(fg(244)).append(footer).append(spaces(width - footer.length()))
+                    .append(ANSI_RESET);
         }
+
+        // Cursor shape follows the mode: bar while typing, block otherwise. Position goes last so the
+        // popup drawing above can never leave the cursor inside it.
+        sb.append(ESC).append(mode == Mode.INSERT ? "[6 q" : "[2 q");
+        sb.append(cursorSeq);
         sb.append(ANSI_SHOW_CURSOR);
         return sb.toString();
     }
@@ -979,7 +1258,7 @@ public class Main {
         synchronized (RENDER_LOCK) {
             renderPaused = true;
         }
-        out.print(ANSI_RESET + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);
+        out.print(ANSI_RESET + ESC + "[0 q" + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);
         out.flush();
         stty(originalStty);
     }
@@ -997,7 +1276,7 @@ public class Main {
 
     private static void restoreTerminal() {
         if (!terminalRestored.compareAndSet(false, true)) return;
-        out.print(ANSI_RESET + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);
+        out.print(ANSI_RESET + ESC + "[0 q" + ANSI_SHOW_CURSOR + ANSI_LEAVE_ALT_SCREEN);
         out.flush();
         if (originalStty != null) {
             if (stty(originalStty) == null) stty("sane");

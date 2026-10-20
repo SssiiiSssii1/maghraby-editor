@@ -13,7 +13,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-import static org.maghraby.Main.showSuggestionsUi;
+import java.util.Comparator;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
  * Keeps one open document in sync with a language server without ever blocking the editor.
@@ -249,38 +252,116 @@ public final class LspDocumentSync implements EditListener, AutoCloseable {
         return dir == null ? Paths.get(".").toAbsolutePath().normalize() : dir;
     }
 
-    public void requestSuggestions(int line, int col) {
+    // ------------------------------------------------------------------
+    // Completion
+    // ------------------------------------------------------------------
+
+    /** One entry of the completion popup. */
+    public static final class Completion {
+        public final String label;      // what the popup shows
+        public final String detail;     // signature / type, may be empty
+        public final String insertText; // what replaces the typed prefix
+        public final int kind;          // LSP CompletionItemKind (1..25), 0 = unknown
+        public final int replaceFromCol; // column on the cursor line where the replacement starts
+
+        Completion(String label, String detail, String insertText, int kind, int replaceFromCol) {
+            this.label = label;
+            this.detail = detail;
+            this.insertText = insertText;
+            this.kind = kind;
+            this.replaceFromCol = replaceFromCol;
+        }
+    }
+
+    private final AtomicInteger completionSeq = new AtomicInteger();
+
+    /** Invalidates any completion request still in flight (its callback will never fire). */
+    public void cancelSuggestions() {
+        completionSeq.incrementAndGet();
+    }
+
+    /**
+     * Asks the server for completions at (line, col). {@code prefix} is the identifier text just before the
+     * cursor; it is used to filter and rank. The callback runs on a background thread, and only for the
+     * LATEST request: answers that arrive after the user typed on are dropped.
+     *
+     * Pending edits are flushed first, otherwise the server would complete against a stale document.
+     */
+    public void requestSuggestions(int line, int col, String prefix, Consumer<List<Completion>> callback) {
         if (!client.isAlive()) return;
+        final int seq = completionSeq.incrementAndGet();
+        final String pfx = prefix == null ? "" : prefix;
 
-        String uriStr = currentUri();
-        if (uriStr == null) return;
+        run(() -> {
+            if (seq != completionSeq.get()) return; // superseded while queued
+            if (!client.awaitReady(0, TimeUnit.MILLISECONDS)) return;
+            String uriStr = currentUri();
+            if (uriStr == null) return;
+            flush(); // make the server see the character that was just typed
 
-        Map<String, Object> params = Json.obj(
-                "textDocument", Json.obj("uri", uriStr),
-                "position", Json.obj("line", line, "character", col)
-        );
+            Map<String, Object> params = Json.obj(
+                    "textDocument", Json.obj("uri", uriStr),
+                    "position", Json.obj("line", line, "character", col));
 
-        client.request("textDocument/completion", params).whenComplete((result, error) -> {
-            if (error != null || result == null) return;
+            client.request("textDocument/completion", params).whenComplete((result, error) -> {
+                if (error != null || result == null || seq != completionSeq.get()) return;
+                List<Object> items = result instanceof List
+                        ? Json.asList(result)
+                        : (result instanceof Map ? Json.asList(Json.asMap(result).get("items")) : null);
+                if (items == null) return;
 
-            List<Object> items = null;
-            if (result instanceof List) {
-                items = Json.asList(result);
-            } else if (result instanceof Map) {
-                items = Json.asList(Json.asMap(result).get("items"));
-            }
+                List<Object[]> ranked = new ArrayList<>(); // {sortKey, Completion}
+                String lowerPrefix = pfx.toLowerCase(Locale.ROOT);
+                for (Object o : items) {
+                    Map<String, Object> m = Json.asMap(o);
+                    if (m == null) continue;
+                    String label = Json.asString(m.get("label"));
+                    if (label == null || label.isEmpty()) continue;
 
-            if (items != null && !items.isEmpty()) {
-                List<String> suggestions = new ArrayList<>();
-                for (Object item : items) {
-                    Map<String, Object> map = Json.asMap(item);
-                    if (map != null) {
-                        String label = Json.asString(map.get("label"));
-                        if (label != null) suggestions.add(label);
+                    String filter = Json.asString(m.get("filterText"));
+                    if (filter == null) filter = label;
+                    if (!lowerPrefix.isEmpty() && !filter.toLowerCase(Locale.ROOT).startsWith(lowerPrefix)) continue;
+
+                    String insert = Json.asString(m.get("insertText"));
+                    int replaceFrom = col - pfx.length();
+                    Map<String, Object> edit = Json.asMap(m.get("textEdit"));
+                    if (edit != null) {
+                        String nt = Json.asString(edit.get("newText"));
+                        if (nt != null) insert = nt;
+                        Map<String, Object> r = Json.asMap(edit.get("range"));
+                        if (r == null) r = Json.asMap(edit.get("replace"));
+                        Map<String, Object> rs = r == null ? null : Json.asMap(r.get("start"));
+                        Map<String, Object> re = r == null ? null : Json.asMap(r.get("end"));
+                        if (rs != null && re != null
+                                && Json.asInt(rs.get("line"), -1) == line && Json.asInt(re.get("line"), -1) == line) {
+                            replaceFrom = Json.asInt(rs.get("character"), replaceFrom);
+                        }
                     }
+                    if (insert == null) insert = label;
+                    if (Json.asInt(m.get("insertTextFormat"), 1) == 2) insert = stripSnippet(insert);
+
+                    String detail = Json.asString(m.get("detail"));
+                    String sort = Json.asString(m.get("sortText"));
+                    Completion c = new Completion(label, detail == null ? "" : detail, insert,
+                            Json.asInt(m.get("kind"), 0), Math.max(0, replaceFrom));
+                    ranked.add(new Object[]{sort == null ? label : sort, c});
                 }
-                showSuggestionsUi(suggestions);
-            }
+                ranked.sort(Comparator.comparing(a -> (String) a[0]));
+
+                List<Completion> out = new ArrayList<>();
+                for (Object[] r : ranked) {
+                    out.add((Completion) r[1]);
+                    if (out.size() >= 50) break;
+                }
+                if (seq == completionSeq.get()) callback.accept(out);
+            });
         });
+    }
+
+    /** "foo(${1:a}, ${2:b})$0" -> "foo(a, b)". */
+    private static String stripSnippet(String s) {
+        return s.replaceAll("\\$\\{\\d+:([^}]*)}", "$1")
+                .replaceAll("\\$\\{\\d+}", "")
+                .replaceAll("\\$\\d+", "");
     }
 }

@@ -20,14 +20,14 @@ public class PythonHighlighter implements SyntaxHighlighter {
             "tuple", "super", "isinstance", "type", "open", "enumerate", "zip"
     );
 
-    // ثوابت ألوان ANSI
+    // ANSI
     private static final String ANSI_RESET = "\033[0m";
-    private static final String ANSI_GREEN = "\033[32m";
-    private static final String ANSI_YELLOW = "\033[33m";
-    private static final String ANSI_MAGENTA = "\033[35m";
-    private static final String ANSI_CYAN = "\033[36m";
-    private static final String ANSI_BLUE = "\033[34m";
-    private static final String ANSI_RED = "\033[31m";
+    private static final String ANSI_GREEN = "\033[38;5;108m";
+    private static final String ANSI_YELLOW = "\033[38;5;180m";
+    private static final String ANSI_MAGENTA = "\033[38;5;176m";
+    private static final String ANSI_CYAN = "\033[38;5;75m";
+    private static final String ANSI_BLUE = "\033[38;5;111m";
+    private static final String ANSI_RED = "\033[38;5;204m";
 
     @Override
     public boolean supportsExtension(String extension) {
@@ -184,7 +184,7 @@ public class PythonHighlighter implements SyntaxHighlighter {
                 newColor = ANSI_RESET;
             }
 
-            // إضافة اللون
+            // Adding color
             if (!newColor.equals(currentColor)) {
                 resultLine.append(newColor);
                 currentColor = newColor;
@@ -194,7 +194,7 @@ public class PythonHighlighter implements SyntaxHighlighter {
             i += tokenLength;
         }
 
-        // إغلاق أي لون مفتوح
+        // Closing any open color
         if (!currentColor.equals(ANSI_RESET)) {
             resultLine.append(ANSI_RESET);
         }

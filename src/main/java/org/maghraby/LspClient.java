@@ -186,7 +186,12 @@ public final class LspClient implements AutoCloseable {
 
     @Override
     public void close() {
-        if (closed) return;
+        if (closed) {
+            // The reader thread marks us closed when the server dies on its own; make sure nothing lingers.
+            if (process.isAlive()) process.destroyForcibly();
+            try { Files.deleteIfExists(logFile); } catch (IOException ignored) { }
+            return;
+        }
         try {
             if (ready.isDone() && !ready.isCompletedExceptionally() && process.isAlive()) {
                 try {
@@ -203,6 +208,7 @@ public final class LspClient implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
+            try { Files.deleteIfExists(logFile); } catch (IOException ignored) { }
         }
     }
 
@@ -222,6 +228,12 @@ public final class LspClient implements AutoCloseable {
                         "textDocument", Json.obj(
                                 "synchronization", Json.obj("dynamicRegistration", false, "willSave", false,
                                         "willSaveWaitUntil", false, "didSave", false),
+                                "completion", Json.obj(
+                                        "dynamicRegistration", false,
+                                        "completionItem", Json.obj(
+                                                "snippetSupport", false,
+                                                "documentationFormat", Json.list("plaintext")),
+                                        "contextSupport", false),
                                 "publishDiagnostics", Json.obj("relatedInformation", false)),
                         "workspace", Json.obj("workspaceFolders", true, "configuration", false)));
 

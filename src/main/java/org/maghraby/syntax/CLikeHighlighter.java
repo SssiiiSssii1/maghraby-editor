@@ -12,12 +12,12 @@ public class CLikeHighlighter implements SyntaxHighlighter {
 
     // ثوابت ألوان ANSI كبديل لـ TextColor في Lanterna
     private static final String ANSI_RESET = "\033[0m";
-    private static final String ANSI_GREEN = "\033[32m";
-    private static final String ANSI_YELLOW = "\033[33m";
-    private static final String ANSI_MAGENTA = "\033[35m";
-    private static final String ANSI_CYAN = "\033[36m";
-    private static final String ANSI_BLUE = "\033[34m";
-    private static final String ANSI_RED = "\033[31m";
+    private static final String ANSI_GREEN = "\033[38;5;108m";
+    private static final String ANSI_YELLOW = "\033[38;5;180m";
+    private static final String ANSI_MAGENTA = "\033[38;5;176m";
+    private static final String ANSI_CYAN = "\033[38;5;75m";
+    private static final String ANSI_BLUE = "\033[38;5;111m";
+    private static final String ANSI_RED = "\033[38;5;204m";
 
     public CLikeHighlighter(Set<String> supportedExtensions, Set<String> keywords) {
         this.supportedExtensions = supportedExtensions;
@@ -134,8 +134,8 @@ public class CLikeHighlighter implements SyntaxHighlighter {
                         end++;
                     } else if (!isHex && (next == 'e' || next == 'E')
                             && (Character.isDigit(peekChar(line, end + 1))
-                                || ((peekChar(line, end + 1) == '+' || peekChar(line, end + 1) == '-')
-                                    && Character.isDigit(peekChar(line, end + 2))))) {
+                            || ((peekChar(line, end + 1) == '+' || peekChar(line, end + 1) == '-')
+                            && Character.isDigit(peekChar(line, end + 2))))) {
                         end += 2; // exponent such as 1e9 or 2.5e-3
                     } else if (next == 'f' || next == 'F' || next == 'l' || next == 'L' || next == 'd' || next == 'D'
                             || next == 'u' || next == 'U' || next == '_') {
